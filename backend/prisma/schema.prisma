@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Snapshot {
+  id        String   @id @default(cuid())
+  profile   String
+  planId    String
+  resource  String
+  payload   Json
+  savedAt   DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([profile, planId, resource])
+  @@index([profile, resource])
+}
+
+model Teacher {
+  pk                  String               @id @default(cuid())
+  profile             String
+  planId              String
+  teacherId           String
+  name                String
+  campusId            String
+  subject             String
+  subjectGroup        String
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  teachingAssignments TeachingAssignment[]
+
+  @@unique([profile, planId, teacherId])
+  @@index([profile, planId, campusId])
+  @@index([profile, planId, name])
+}
+
+model Course {
+  pk                  String               @id @default(cuid())
+  profile             String
+  planId              String
+  courseId            String
+  name                String
+  shortName           String
+  subject             String
+  scopes              Json
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  teachingAssignments TeachingAssignment[]
+
+  @@unique([profile, planId, courseId])
+  @@index([profile, planId, subject])
+}
+
+model SchoolClass {
+  pk                  String               @id @default(cuid())
+  profile             String
+  planId              String
+  classId             String
+  campusId            String
+  stage               String
+  grade               String
+  classNo             Int
+  className           String
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  teachingAssignments TeachingAssignment[]
+
+  @@unique([profile, planId, classId])
+  @@index([profile, planId, campusId, grade])
+  @@index([profile, planId, className])
+}
+
+model TeachingAssignment {
+  pk            String      @id @default(cuid())
+  profile       String
+  planId        String
+  assignmentId  String
+  campusId      String
+  grade         String
+  weeklyLessons Int
+  classId       String
+  teacherId     String
+  courseId      String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  class         SchoolClass @relation(fields: [profile, planId, classId], references: [profile, planId, classId], onDelete: Cascade)
+  course        Course      @relation(fields: [profile, planId, courseId], references: [profile, planId, courseId], onDelete: Cascade)
+  teacher       Teacher     @relation(fields: [profile, planId, teacherId], references: [profile, planId, teacherId], onDelete: Cascade)
+
+  @@unique([profile, planId, assignmentId])
+  @@index([profile, planId, classId])
+  @@index([profile, planId, teacherId])
+  @@index([profile, planId, courseId])
+}

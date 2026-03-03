@@ -1,0 +1,30 @@
+{
+  "name": "schedule-system",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "api": "npm --prefix backend run dev",
+    "api:nest": "npm --prefix backend run dev",
+    "dev": "vite --host 127.0.0.1",
+    "dev:all": "bash ./scripts/dev-all.sh",
+    "dev:all:nowatch": "bash ./scripts/dev-all-nowatch.sh",
+    "dev:stop": "bash ./scripts/dev-stop.sh",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.13.2",
+    "exceljs": "^4.4.0",
+    "file-saver": "^2.0.5",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
