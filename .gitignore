@@ -9,5 +9,7 @@ backend/.env
 backend/data/
 backend/prisma/dev.db
 backend/prisma/dev.db-journal
+backend/solver/.venv/
+.venv/
 
 .DS_Store
