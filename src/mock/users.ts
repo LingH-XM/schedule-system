@@ -1,4 +1,5 @@
 export type MockUser = {
+  accountId: string
   username: string
   password: string
   role: 'admin'
@@ -7,6 +8,7 @@ export type MockUser = {
 
 export const mockUsers: MockUser[] = [
   {
+    accountId: 'admin',
     username: 'admin',
     password: 'Admin@123456',
     role: 'admin',

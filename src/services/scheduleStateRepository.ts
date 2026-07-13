@@ -1,3 +1,5 @@
+import { withAccountQuery, withAccountStorageKey } from './accountContext'
+
 export type PlanMode = '行政班排课'
 
 export type SchedulePlan = {
@@ -31,7 +33,7 @@ const PLANS_API_PATH = `/api/${profile}/schedule-plans`
 const WORKBENCH_API_PATH = `/api/${profile}/workbench-state`
 
 function endpoint(path: string): string {
-  return `${apiBaseUrl}${path}?planId=${encodeURIComponent(planId)}`
+  return withAccountQuery(`${apiBaseUrl}${path}?planId=${encodeURIComponent(planId)}`)
 }
 
 function parsePlans(raw: string | null): SchedulePlan[] {
@@ -58,7 +60,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
   let drafts: Record<string, unknown> = {}
   let logs: Record<string, unknown[]> = {}
 
-  const entriesRaw = localStorage.getItem(WORKBENCH_PERSIST_KEY)
+  const entriesRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_PERSIST_KEY))
   if (entriesRaw) {
     try {
       const parsed = JSON.parse(entriesRaw) as Record<string, unknown>
@@ -68,7 +70,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const metaRaw = localStorage.getItem(WORKBENCH_META_KEY)
+  const metaRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_META_KEY))
   if (metaRaw) {
     try {
       const parsed = JSON.parse(metaRaw) as Record<string, { savedAt?: number; publishedAt?: number }>
@@ -88,7 +90,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const draftsRaw = localStorage.getItem(WORKBENCH_DRAFTS_KEY)
+  const draftsRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_DRAFTS_KEY))
   if (draftsRaw) {
     try {
       const parsed = JSON.parse(draftsRaw) as Record<string, unknown>
@@ -98,7 +100,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const logsRaw = localStorage.getItem(WORKBENCH_LOGS_KEY)
+  const logsRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_LOGS_KEY))
   if (logsRaw) {
     try {
       const parsed = JSON.parse(logsRaw) as Record<string, unknown>
@@ -120,14 +122,14 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
 }
 
 function writeWorkbenchLocal(snapshot: WorkbenchPersistSnapshot): void {
-  localStorage.setItem(WORKBENCH_PERSIST_KEY, JSON.stringify(snapshot.entries || {}))
-  localStorage.setItem(WORKBENCH_META_KEY, JSON.stringify(snapshot.meta || {}))
-  localStorage.setItem(WORKBENCH_DRAFTS_KEY, JSON.stringify(snapshot.drafts || {}))
-  localStorage.setItem(WORKBENCH_LOGS_KEY, JSON.stringify(snapshot.logs || {}))
+  localStorage.setItem(withAccountStorageKey(WORKBENCH_PERSIST_KEY), JSON.stringify(snapshot.entries || {}))
+  localStorage.setItem(withAccountStorageKey(WORKBENCH_META_KEY), JSON.stringify(snapshot.meta || {}))
+  localStorage.setItem(withAccountStorageKey(WORKBENCH_DRAFTS_KEY), JSON.stringify(snapshot.drafts || {}))
+  localStorage.setItem(withAccountStorageKey(WORKBENCH_LOGS_KEY), JSON.stringify(snapshot.logs || {}))
 }
 
 export function loadSchedulePlansLocal(): SchedulePlan[] {
-  return parsePlans(localStorage.getItem(PLANS_LOCAL_KEY))
+  return parsePlans(localStorage.getItem(withAccountStorageKey(PLANS_LOCAL_KEY)))
 }
 
 export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
@@ -142,7 +144,7 @@ export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
     const apiSavedAt = typeof payload?._savedAt === 'number' ? payload._savedAt : 0
     const localSavedAt = plansSavedAt(local)
     const latest = localSavedAt >= apiSavedAt ? local : apiPlans
-    localStorage.setItem(PLANS_LOCAL_KEY, JSON.stringify(latest))
+    localStorage.setItem(withAccountStorageKey(PLANS_LOCAL_KEY), JSON.stringify(latest))
     return latest
   } catch (error) {
     console.warn('[ScheduleState] 读取排课方案失败，回退本地。', error)
@@ -151,7 +153,7 @@ export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
 }
 
 export function saveSchedulePlansLocal(plans: SchedulePlan[]): void {
-  localStorage.setItem(PLANS_LOCAL_KEY, JSON.stringify(plans))
+  localStorage.setItem(withAccountStorageKey(PLANS_LOCAL_KEY), JSON.stringify(plans))
 }
 
 export async function saveSchedulePlans(plans: SchedulePlan[]): Promise<void> {

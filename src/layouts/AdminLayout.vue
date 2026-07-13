@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { Expand, Fold } from '@element-plus/icons-vue'
-import { getCurrentUser, logout } from '../services/auth'
+import { Expand, Fold, School, SwitchButton } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
+import { getCurrentUser, hasRequiredRole, logout } from '../services/auth'
+import { basicDataRepository } from '../services/basicDataRepository'
+import { formatSchoolTermLabel } from '../utils/termLabel'
 
 const route = useRoute()
 const router = useRouter()
 
 const navItems = [
   { label: '控制台', to: '/dashboard' },
+  { label: '账户管理', to: '/users', minRole: 'super_admin' as const },
   { label: '基础数据', to: '/basic-data' },
   { label: '排课规则设置', to: '/rule-settings' },
   { label: '排课管理', to: '/schedules' },
@@ -16,8 +20,30 @@ const navItems = [
 ]
 
 const currentUser = computed(() => getCurrentUser())
+const visibleNavItems = computed(() =>
+  navItems.filter((item) => !item.minRole || hasRequiredRole(currentUser.value?.role, item.minRole))
+)
 const SIDEBAR_COLLAPSE_KEY = 'admin_sidebar_collapsed_v1'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === '1')
+const currentTermLabel = ref('未设置学期')
+
+async function refreshCurrentTerm(): Promise<void> {
+  const result = basicDataRepository.load()
+  const snapshot = result instanceof Promise ? await result : result
+  currentTermLabel.value = formatSchoolTermLabel(String(snapshot?.selectedTerm || '')) || '未设置学期'
+}
+
+function handleTermChanged(event: Event): void {
+  const term = (event as CustomEvent<string>).detail
+  currentTermLabel.value = formatSchoolTermLabel(String(term || '')) || '未设置学期'
+}
+
+onMounted(() => {
+  void refreshCurrentTerm()
+  window.addEventListener('schedule-term-changed', handleTermChanged)
+})
+
+onBeforeUnmount(() => window.removeEventListener('schedule-term-changed', handleTermChanged))
 
 watch(
   sidebarCollapsed,
@@ -27,9 +53,18 @@ watch(
   { immediate: true }
 )
 
-function handleLogout() {
+async function handleLogout(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('退出后需要重新登录才能继续操作，是否退出？', '确认退出登录', {
+      confirmButtonText: '退出登录',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
   logout()
-  router.push({ name: 'login' })
+  await router.push({ name: 'login' })
 }
 
 function toggleSidebar(): void {
@@ -53,7 +88,7 @@ function isNavActive(target: string): boolean {
       </div>
       <nav class="nav-menu">
         <RouterLink
-          v-for="item in navItems"
+          v-for="item in visibleNavItems"
           :key="item.to"
           :to="item.to"
           class="nav-link"
@@ -67,6 +102,10 @@ function isNavActive(target: string): boolean {
     <div class="admin-main">
       <header class="admin-header">
         <div class="header-left">
+          <div class="header-term-display">
+            <span>当前学年学期</span>
+            <strong>{{ currentTermLabel }}</strong>
+          </div>
           <el-button
             v-if="sidebarCollapsed"
             class="sidebar-expand-btn"
@@ -78,8 +117,25 @@ function isNavActive(target: string): boolean {
           </el-button>
         </div>
         <div class="user-actions">
-          <span>{{ currentUser?.name ?? '未知用户' }}</span>
-          <el-button size="small" @click="handleLogout">退出</el-button>
+          <div class="header-accountbar">
+            <div class="user-identity-card">
+              <span class="user-identity-icon">
+                <el-icon><School /></el-icon>
+              </span>
+              <div class="user-identity-copy">
+                <span class="user-identity-label">当前学校</span>
+                <div class="user-identity-main">
+                  <span class="user-identity-name">{{ currentUser?.accountName ?? currentUser?.name ?? '未知用户' }}</span>
+                  <span class="user-identity-role">{{ currentUser?.role === 'super_admin' ? '超级管理员' : '管理员' }}</span>
+                </div>
+              </div>
+            </div>
+            <span class="header-account-divider" />
+            <el-button class="logout-btn" @click="handleLogout">
+              <el-icon><SwitchButton /></el-icon>
+              <span>退出登录</span>
+            </el-button>
+          </div>
         </div>
       </header>
 

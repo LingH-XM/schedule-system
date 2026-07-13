@@ -36,7 +36,7 @@ function formatLockTime(seconds: number): string {
   return `${minutes} 分钟`
 }
 
-function handleSubmit() {
+async function handleSubmit() {
   errorMessage.value = ''
 
   if (!form.username || !form.password) {
@@ -45,26 +45,25 @@ function handleSubmit() {
   }
 
   loading.value = true
+  const result = await login({
+    username: form.username.trim(),
+    password: form.password,
+    remember: form.remember
+  })
 
-  setTimeout(() => {
-    const result = login({
-      username: form.username.trim(),
-      password: form.password,
-      remember: form.remember
-    })
-
-    if (!result.ok) {
-      if (result.reason === 'LOCKED') {
-        errorMessage.value = `登录失败次数过多，请 ${formatLockTime(result.remainingSeconds)} 后再试`
-      } else {
-        errorMessage.value = '用户名或密码错误'
-      }
-      loading.value = false
-      return
+  if (!result.ok) {
+    if (result.reason === 'LOCKED') {
+      errorMessage.value = `登录失败次数过多，请 ${formatLockTime(result.remainingSeconds)} 后再试`
+    } else if (result.reason === 'NETWORK') {
+      errorMessage.value = '登录服务不可用，请稍后重试'
+    } else {
+      errorMessage.value = '用户名或密码错误'
     }
+    loading.value = false
+    return
+  }
 
-    router.push({ name: 'dashboard' })
-  }, 250)
+  router.push({ name: 'dashboard' })
 }
 </script>
 
@@ -72,11 +71,11 @@ function handleSubmit() {
   <main class="login-page">
     <section class="login-card">
       <h1>排课系统登录</h1>
-      <p>请输入管理员账号访问后台</p>
+      <p>请输入登录账号或手机号访问后台</p>
 
       <form class="login-form" @submit.prevent="handleSubmit">
-        <label for="username">用户名</label>
-        <el-input id="username" v-model="form.username" autocomplete="username" placeholder="请输入用户名" />
+        <label for="username">登录账号 / 手机号</label>
+        <el-input id="username" v-model="form.username" autocomplete="username" placeholder="请输入登录账号或手机号" />
 
         <label for="password">密码</label>
         <el-input
@@ -100,7 +99,7 @@ function handleSubmit() {
       </form>
 
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-      <div class="hint">测试账号：admin / Admin@123456</div>
+      <div class="hint">默认管理员：admin / Admin@123456</div>
     </section>
   </main>
 </template>

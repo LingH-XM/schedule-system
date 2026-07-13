@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx'
 import { basicDataRepository } from '../../services/basicDataRepository'
 import { loadWorkbenchPersistSnapshot, saveWorkbenchPersistSnapshot } from '../../services/scheduleStateRepository'
 import { notify } from '../../utils/notify'
+import { formatSchoolTermLabelFromParts } from '../../utils/termLabel'
 
 type BaseMenu = {
   key: string
@@ -53,6 +54,7 @@ type CourseScope = '小学' | '初中'
 
 type CourseItem = {
   id: string
+  orderNo: number
   name: string
   shortName: string
   subject: string
@@ -143,6 +145,14 @@ type ClassHourRow = {
   afternoonLessons: number
   eveningStudy: number
   breakSlot: string
+  fixedActivities?: FixedActivity[]
+}
+
+type FixedActivity = {
+  id: string
+  name: string
+  anchorPeriod: number
+  position: 'before' | 'after'
 }
 
 type ClassHourClassRow = {
@@ -157,6 +167,7 @@ type ClassHourClassRow = {
   afternoonLessons: number
   eveningStudy: number
   breakSlot: string
+  fixedActivities?: FixedActivity[]
 }
 
 type ArrangementRow = {
@@ -192,15 +203,14 @@ type TermOption = {
 type ArrangementScopeState = {
   rows: ArrangementRow[]
   batchValues: Record<string, number | null>
+  hiddenCourseIds?: string[]
 }
 
 type ClassHoursBatchDraft = {
   weeklyDays: number | null
-  morningStudy: number | null
   morningLessons: number | null
   afternoonLessons: number | null
-  eveningStudy: number | null
-  breakSlot: string | null
+  fixedActivities: FixedActivity[] | null
 }
 
 type BasicDataSnapshot = {
@@ -227,8 +237,31 @@ type BasicDataSnapshot = {
   arrangementBatchValues: Record<string, number | null>
   arrangementScopes: Record<string, ArrangementScopeState>
   classHoursBatchDrafts?: Record<string, ClassHoursBatchDraft>
+  termData?: Record<string, Record<string, unknown>>
   _savedAt?: number
 }
+
+type TermDataSnapshot = Pick<
+  BasicDataSnapshot,
+  | 'courses'
+  | 'roomRecords'
+  | 'classRoomMappings'
+  | 'teacherRecords'
+  | 'studentRecords'
+  | 'groupRecords'
+  | 'teachingAssignments'
+  | 'classRecords'
+  | 'classHourRows'
+  | 'classHourClassRows'
+  | 'selectedHoursCampusId'
+  | 'selectedHoursEducationSystem'
+  | 'arrangementCampusId'
+  | 'arrangementGrade'
+  | 'arrangementRows'
+  | 'arrangementBatchValues'
+  | 'arrangementScopes'
+  | 'classHoursBatchDrafts'
+>
 
 const groups: BaseGroup[] = [
   {
@@ -243,7 +276,7 @@ const groups: BaseGroup[] = [
     key: 'teaching',
     label: '教学信息',
     children: [
-      { key: 'lesson-cycle', label: '教学周期', status: 'done' },
+      { key: 'lesson-cycle', label: '教学周期管理', status: 'done' },
       { key: 'course-manage', label: '课程管理', status: 'done' },
       { key: 'class-setting', label: '班级设置', status: 'done' },
       { key: 'class-hours', label: '班级课时', status: 'done' },
@@ -257,16 +290,16 @@ const groups: BaseGroup[] = [
       { key: 'group-manage', label: '教研与活动分组', status: 'done' },
       { key: 'teacher-entry', label: '录入教师', status: 'done' },
       { key: 'teaching-info', label: '任课信息', status: 'done' },
-      { key: 'student-entry', label: '录入学生', status: 'done' }
+      { key: 'student-entry', label: '录入学生（选填）', status: 'done' }
     ]
   },
   {
     key: 'classroom',
     label: '教室信息',
     children: [
-      { key: 'room-type', label: '教室类型', status: 'done' },
-      { key: 'room-entry', label: '录入教室', status: 'done' },
-      { key: 'classroom-map', label: '班级教室', status: 'done' }
+      { key: 'room-type', label: '教室类型（选填）', status: 'done' },
+      { key: 'room-entry', label: '录入教室（选填）', status: 'done' },
+      { key: 'classroom-map', label: '班级教室（选填）', status: 'done' }
     ]
   }
 ]
@@ -367,7 +400,7 @@ const DEFAULT_SUBJECT_GROUP_MAP: Record<string, string> = {
 const AVAILABLE_COURSE_SCOPES: CourseScope[] = ['小学', '初中']
 const REQUIRED_DEFAULT_COURSE_NAMES = ['语文', '数学', '英语', '科学', '道德与法治', '美术', '音乐', '体育', '劳动']
 const LEGACY_REMOVED_COURSE_NAMES = new Set(['班会', '阅读', '自习', '英语外教', '物理非高考', '物理高考'])
-const COURSE_COLUMNS = ['课程名称', '课程简称', '所属学科', '应用范围', '所属校区']
+const COURSE_COLUMNS = ['序号', '课程名称', '课程简称', '所属学科', '应用范围', '所属校区']
 const DEFAULT_REQUIRED_SCOPE: CourseScope = '小学'
 const EDUCATION_SYSTEM_OPTIONS: Campus['educationSystem'][] = ['小学', '初中', '九年一贯制']
 
@@ -381,28 +414,26 @@ function getDefaultSubjectGroup(subject: string): string {
 function isLegacyTeacherId(id: string): boolean {
   const value = id.trim()
   if (!value) return true
-  return /^t-(mock|import|quick)-/i.test(value) || /^t-\d+$/i.test(value)
+  return /^t-(mock|import|quick)-/i.test(value) || /^t-\d+$/i.test(value) || /^T0*(\d+)$/i.test(value)
 }
 
-function generateNextTeacherId(existingIds: string[]): string {
-  const used = new Set(existingIds.map((item) => item.trim()).filter(Boolean))
-  let next = 1
-  existingIds.forEach((id) => {
-    const matched = id.trim().match(/^T0*(\d+)$/i)
-    if (!matched) return
-    const num = Number(matched[1])
-    if (Number.isFinite(num) && num >= next) {
-      next = num + 1
-    }
-  })
+function randomDigits(length: number): string {
+  let value = ''
+  while (value.length < length) {
+    value += Math.floor(Math.random() * 10).toString()
+  }
+  return value.slice(0, length)
+}
 
-  while (true) {
-    const candidate = `T${next}`
+function generateTeacherId(existingIds: string[]): string {
+  const used = new Set(existingIds.map((item) => item.trim()).filter(Boolean))
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const candidate = `tch${randomDigits(9)}`
     if (!used.has(candidate)) {
       return candidate
     }
-    next += 1
   }
+  return `tch${Date.now().toString().slice(-9)}`
 }
 
 function buildNormalizedTeacherState(list: TeacherRecord[]): {
@@ -415,26 +446,8 @@ function buildNormalizedTeacherState(list: TeacherRecord[]): {
 
   list.forEach((item) => {
     const rawId = (item.id ?? '').trim()
-    const canonicalMatch = rawId.match(/^T0*(\d+)$/i)
-    if (!canonicalMatch || isLegacyTeacherId(rawId)) return
-    const num = Number(canonicalMatch[1])
-    if (!Number.isFinite(num) || num <= 0) return
-    const id = `T${num}`
-    if (used.has(id)) return
-    used.add(id)
-    idMap.set(rawId, id)
-    draft.push({
-      ...item,
-      id,
-      subjectGroup: item.subjectGroup?.trim() || getDefaultSubjectGroup(item.subject)
-    })
-  })
-
-  list.forEach((item) => {
-    const rawId = (item.id ?? '').trim()
     if (!rawId) return
-    const canonicalMatch = rawId.match(/^T0*(\d+)$/i)
-    if (canonicalMatch || isLegacyTeacherId(rawId)) return
+    if (isLegacyTeacherId(rawId)) return
     if (used.has(rawId)) return
     used.add(rawId)
     idMap.set(rawId, rawId)
@@ -446,18 +459,9 @@ function buildNormalizedTeacherState(list: TeacherRecord[]): {
   })
 
   list.forEach((item) => {
-    const matched = (item.id ?? '').trim().match(/^T0*(\d+)$/i)
-    if (!matched) return
-    const num = Number(matched[1])
-    if (Number.isFinite(num) && num > 0) {
-      used.add(`T${num}`)
-    }
-  })
-
-  list.forEach((item) => {
     const rawId = (item.id ?? '').trim()
     if (idMap.has(rawId)) return
-    const id = generateNextTeacherId(Array.from(used))
+    const id = generateTeacherId(Array.from(used))
     used.add(id)
     idMap.set(rawId, id)
     draft.push({
@@ -720,17 +724,20 @@ function normalizeCourseRecords(list: CourseItem[]): CourseItem[] {
   return list
     .filter((item) => !item.name.includes('高考'))
     .filter((item) => !LEGACY_REMOVED_COURSE_NAMES.has(item.name))
-    .map((item) => {
+    .map((item, index) => {
       const scopes = item.scopes.filter((scope): scope is CourseScope =>
         AVAILABLE_COURSE_SCOPES.includes(scope as CourseScope)
       )
       const singleScope = scopes[0] ?? DEFAULT_REQUIRED_SCOPE
+      const orderNoRaw = Number((item as CourseItem & { orderNo?: number | string }).orderNo)
       return {
         ...item,
+        orderNo: Number.isFinite(orderNoRaw) && orderNoRaw > 0 ? Math.floor(orderNoRaw) : index + 1,
         scopes: [singleScope],
         campusId: String((item as CourseItem & { campusId?: string }).campusId ?? '').trim()
       }
     })
+    .sort((a, b) => a.orderNo - b.orderNo || a.name.localeCompare(b.name, 'zh-Hans-CN') || a.id.localeCompare(b.id))
 }
 
 function parseSchoolYearStart(value: string): number | null {
@@ -800,7 +807,7 @@ const termOptions = computed<TermOption[]>(() =>
     .flatMap((year) =>
       year.semesters.map((semester) => ({
         value: `${year.id}-${semester.name}`,
-        label: `${year.id}${semester.name}`,
+        label: formatSchoolTermLabelFromParts(year.id, semester.name),
         yearId: year.id,
         semesterName: semester.name,
         startDate: semester.startDate,
@@ -814,6 +821,8 @@ const termOptions = computed<TermOption[]>(() =>
 )
 const selectedTerm = ref('')
 const selectedTermOption = computed(() => termOptions.value.find((item) => item.value === selectedTerm.value) ?? null)
+const termDataSnapshots = ref<Record<string, TermDataSnapshot>>({})
+const activeTermDataKey = ref('')
 
 function getCurrentOrFirstTermValue(): string {
   const today = formatTodayDate()
@@ -852,12 +861,92 @@ const teachingCycles = computed<TeachingCycle[]>(() => {
   ]
 })
 
+function setCurrentTeachingTerm(value: string): void {
+  const term = termOptions.value.find((item) => item.value === value)
+  if (!term) return
+  notify.success(`已将「${term.label}」设为当前教学周期。`)
+}
+
+const importableTermOptions = computed(() =>
+  termOptions.value.filter((item) => item.value !== selectedTerm.value && Boolean(termDataSnapshots.value[item.value]))
+)
+
+function openTermImportDialog(): void {
+  termImportForm.sourceTerm = importableTermOptions.value.at(-1)?.value ?? ''
+  termImportForm.promoteGrades = false
+  termImportDialogVisible.value = true
+}
+
+function nextGrade(grade: string, campusId: string): string | null {
+  const order = gradeOrderMap[grade]
+  const educationSystem = campuses.value.find((item) => item.id === campusId)?.educationSystem
+  if (!order || !educationSystem) return null
+
+  const maxGrade = educationSystem === '小学' ? 6 : 9
+  const minGrade = educationSystem === '初中' ? 7 : 1
+  if (order < minGrade || order >= maxGrade) return null
+  return gradeLabels[order] ?? null
+}
+
+function createImportedTermData(source: TermDataSnapshot, promoteGrades: boolean): TermDataSnapshot {
+  const next = cloneTermData(source)
+  if (!promoteGrades) return next
+
+  const classGradeMap = new Map<string, string>()
+  next.classRecords = next.classRecords.flatMap((item) => {
+    const grade = nextGrade(item.grade, item.campusId)
+    if (!grade) return []
+    classGradeMap.set(item.id, grade)
+    const nextClassName = item.className.startsWith(item.grade)
+      ? `${grade}${item.className.slice(item.grade.length)}`
+      : item.className
+    return [{ ...item, grade, stage: (gradeOrderMap[grade] ?? 9) <= 6 ? '小学' : '初中', className: normalizeClassDisplayName(grade, item.classNo, nextClassName) }]
+  })
+  const retainedClassIds = new Set(next.classRecords.map((item) => item.id))
+  next.studentRecords = next.studentRecords.flatMap((item) => {
+    const grade = classGradeMap.get(item.classId)
+    return grade ? [{ ...item, grade }] : []
+  })
+  next.classHourRows = next.classHourRows.flatMap((item) => {
+    const grade = nextGrade(item.grade, item.campusId ?? '')
+    return grade ? [{ ...item, grade }] : []
+  })
+  next.classHourClassRows = next.classHourClassRows.flatMap((item) => {
+    const grade = classGradeMap.get(item.classId)
+    return grade ? [{ ...item, grade, className: next.classRecords.find((record) => record.id === item.classId)?.className ?? item.className }] : []
+  })
+  next.classRoomMappings = next.classRoomMappings.filter((item) => retainedClassIds.has(item.classId))
+  next.teachingAssignments = next.teachingAssignments.filter((item) => retainedClassIds.has(item.classId))
+  next.arrangementRows = []
+  next.arrangementBatchValues = {}
+  next.arrangementScopes = {}
+  return next
+}
+
+function importTermData(): void {
+  const source = termDataSnapshots.value[termImportForm.sourceTerm]
+  if (!source) {
+    notify.warning('请选择要导入的来源学期。')
+    return
+  }
+  const imported = createImportedTermData(source, termImportForm.promoteGrades)
+  applyTermDataSnapshot(imported)
+  termDataSnapshots.value = { ...termDataSnapshots.value, [selectedTerm.value]: createTermDataSnapshot() }
+  termImportDialogVisible.value = false
+  notify.success(termImportForm.promoteGrades ? '基础数据已导入，并完成升年级处理。' : '基础数据已导入当前学期。')
+}
+
 const courseTab = ref<'全部' | CourseScope>('小学')
 const courseCampusId = ref('__all__')
 const courseKeyword = ref('')
 const courseTableRef = ref<TableInstance | null>(null)
 const selectedCourseIds = ref<string[]>([])
 const classTableRef = ref<TableInstance | null>(null)
+const classTableCampusId = ref('__all__')
+const classTableGradeFilter = ref<string[]>([])
+const classPage = ref(1)
+const classPageSize = ref(15)
+const classPageSizeOptions = [15, 30, 50, 100]
 const selectedClassIds = ref<string[]>([])
 const enabledCourseScopes = computed<CourseScope[]>(() => {
   const set = new Set<CourseScope>()
@@ -889,6 +978,7 @@ const courses = ref<CourseItem[]>(
   normalizeCourseRecords(
     REQUIRED_DEFAULT_COURSE_NAMES.map((name, index) => ({
       id: `${index + 1}`,
+      orderNo: index + 1,
       name,
       shortName: '',
       subject: name,
@@ -909,29 +999,7 @@ const roomTypes = ref<RoomTypeRecord[]>([
 const roomRecords = ref<RoomRecord[]>([])
 const classRoomMappings = ref<ClassRoomMapRecord[]>([])
 
-const teacherRecords = ref<TeacherRecord[]>([
-  {
-    id: 'T1',
-    name: '陈雄鹰',
-    subject: '语文',
-    subjectGroup: '语文组',
-    campusId: '1'
-  },
-  {
-    id: 'T2',
-    name: '张明勇',
-    subject: '数学',
-    subjectGroup: '数学组',
-    campusId: '1'
-  },
-  {
-    id: 'T3',
-    name: '薛亚玲',
-    subject: '英语',
-    subjectGroup: '英语组',
-    campusId: '1'
-  }
-])
+const teacherRecords = ref<TeacherRecord[]>([])
 
 const studentRecords = ref<StudentRecord[]>([])
 
@@ -997,7 +1065,8 @@ function isCourseVisibleInCampus(course: CourseItem, campusId: string): boolean 
 }
 
 const filteredCourses = computed(() => {
-  const byCampus = courses.value.filter((item) => isCourseVisibleInCampus(item, courseCampusId.value))
+  const ordered = [...courses.value].sort((a, b) => a.orderNo - b.orderNo || a.name.localeCompare(b.name, 'zh-Hans-CN') || a.id.localeCompare(b.id))
+  const byCampus = ordered.filter((item) => isCourseVisibleInCampus(item, courseCampusId.value))
   const byScope = courseTab.value === '全部' ? byCampus : byCampus.filter((item) => item.scopes.includes(courseTab.value))
   const keyword = courseKeyword.value.trim().toLowerCase()
   if (!keyword) return byScope
@@ -1007,9 +1076,9 @@ const filteredCourses = computed(() => {
     return [item.name, item.shortName, item.subject, campusName].join(' ').toLowerCase().includes(keyword)
   })
 })
-const filteredCourseIndexMap = computed(() => {
-  return Object.fromEntries(filteredCourses.value.map((item, index) => [item.id, index + 1]))
-})
+const nextCourseOrderNo = computed(() =>
+  courses.value.reduce((max, item) => Math.max(max, Number.isFinite(item.orderNo) ? item.orderNo : 0), 0) + 1
+)
 const selectedCourseCount = computed(() => selectedCourseIds.value.length)
 const selectedClassCount = computed(() => selectedClassIds.value.length)
 const courseDialogVisible = ref(false)
@@ -1017,12 +1086,14 @@ const courseDialogMode = ref<'create' | 'edit'>('create')
 const courseDialogError = ref('')
 const courseEditingId = ref('')
 const courseForm = reactive<{
+  orderNo: string
   name: string
   shortName: string
   subject: string
   scope: CourseScope
   campusId: string
 }>({
+  orderNo: '',
   name: '',
   shortName: '',
   subject: '',
@@ -1041,14 +1112,118 @@ const courseSubjectOptions = computed(() =>
 
 const hourDayOptions = [0, 5, 6, 7]
 const hourCountOptions = [0, 1, 2, 3, 4, 5]
-const breakSlotOptions = ['', '上午第2节课后', '上午第3节课后', '下午第2节课后']
+const fixedActivityPlacementOptions = Array.from({ length: 12 }, (_, index) => {
+  const period = index + 1
+  return [
+    { value: `${period}-before`, label: `第 ${period} 节前` },
+    { value: `${period}-after`, label: `第 ${period} 节后` }
+  ]
+}).flat()
 const selectedHoursCampusId = ref('')
 const selectedHoursEducationSystem = ref<Campus['educationSystem']>('九年一贯制')
+const currentHoursCampus = computed(() => campuses.value.find((item) => item.id === selectedHoursCampusId.value) ?? null)
 const resetGradeTarget = ref('__all__')
 const classHoursResetDialogVisible = ref(false)
 const classHoursResetFinalVisible = ref(false)
 const arrangementResetDialogVisible = ref(false)
 const arrangementResetFinalVisible = ref(false)
+const fixedActivitiesDialogVisible = ref(false)
+const fixedActivitiesDialogTitle = ref('')
+const fixedActivitiesTarget = ref<ClassHourRow | ClassHourClassRow | null>(null)
+const fixedActivitiesTargetIsBatch = ref(false)
+const fixedActivitiesForm = ref<FixedActivity[]>([])
+
+function cloneFixedActivities(list: FixedActivity[] | undefined): FixedActivity[] {
+  return (list || []).map((item, index) => ({
+    id: String(item.id || `fixed-${Date.now()}-${index}`),
+    name: String(item.name || '').trim(),
+    anchorPeriod: Math.max(1, Math.floor(Number(item.anchorPeriod) || 1)),
+    position: item.position === 'before' ? 'before' : 'after'
+  }))
+}
+
+function getFixedActivityPlacementValue(list: FixedActivity[] | null | undefined, name: string): string {
+  const activity = list?.find((item) => item.name === name)
+  return activity ? `${activity.anchorPeriod}-${activity.position}` : ''
+}
+
+function setFixedActivityPlacement(
+  target: { fixedActivities?: FixedActivity[] | null },
+  name: string,
+  rawValue: string
+): void {
+  const list = cloneFixedActivities(target.fixedActivities ?? [])
+  const existingIndex = list.findIndex((item) => item.name === name)
+  if (!rawValue) {
+    if (existingIndex >= 0) list.splice(existingIndex, 1)
+    target.fixedActivities = list
+    return
+  }
+  const [rawPeriod, rawPosition] = rawValue.split('-')
+  const anchorPeriod = Math.max(1, Math.floor(Number(rawPeriod) || 1))
+  const position = rawPosition === 'before' ? 'before' : 'after'
+  const next = { id: list[existingIndex]?.id || `fixed-${Date.now()}-${name}`, name, anchorPeriod, position }
+  if (existingIndex >= 0) list.splice(existingIndex, 1, next)
+  else list.push(next)
+  target.fixedActivities = list
+}
+
+const customFixedActivityNames = computed(() => {
+  const names = new Set<string>()
+  const collect = (list: FixedActivity[] | null | undefined) => {
+    list?.forEach((item) => {
+      const name = String(item.name || '').trim()
+      if (name) names.add(name)
+    })
+  }
+  collect(classHoursBatchForm.fixedActivities)
+  currentClassHourRows.value.forEach((row) => collect(row.fixedActivities))
+  classHoursByClassRows.value.forEach((row) => collect(row.fixedActivities))
+  return Array.from(names)
+})
+
+function addFixedActivity(): void {
+  fixedActivitiesForm.value.push({
+    id: `fixed-${Date.now()}-${fixedActivitiesForm.value.length}`,
+    name: '',
+    anchorPeriod: 1,
+    position: 'after'
+  })
+}
+
+function openFixedActivitiesDialog(
+  target: ClassHourRow | ClassHourClassRow | 'batch',
+  title: string
+): void {
+  fixedActivitiesTarget.value = target === 'batch' ? null : target
+  fixedActivitiesTargetIsBatch.value = target === 'batch'
+  fixedActivitiesDialogTitle.value = title
+  fixedActivitiesForm.value = cloneFixedActivities(
+    target === 'batch' ? classHoursBatchForm.fixedActivities ?? [] : target.fixedActivities
+  )
+  fixedActivitiesDialogVisible.value = true
+}
+
+function removeFixedActivity(index: number): void {
+  fixedActivitiesForm.value.splice(index, 1)
+}
+
+function saveFixedActivities(): void {
+  const invalid = fixedActivitiesForm.value.some((item) => !item.name.trim() || item.anchorPeriod < 1)
+  if (invalid) {
+    notify.warning('请完整填写固定活动名称和插入节次。')
+    return
+  }
+  const activities = cloneFixedActivities(fixedActivitiesForm.value)
+  if (fixedActivitiesTargetIsBatch.value) {
+    classHoursBatchForm.fixedActivities = activities
+  } else if (fixedActivitiesTarget.value) {
+    fixedActivitiesTarget.value.fixedActivities = activities
+  }
+  fixedActivitiesDialogVisible.value = false
+  fixedActivitiesTarget.value = null
+  fixedActivitiesTargetIsBatch.value = false
+}
 
 function createDefaultClassHourRow(campusId: string, grade: string): ClassHourRow {
   return {
@@ -1060,7 +1235,8 @@ function createDefaultClassHourRow(campusId: string, grade: string): ClassHourRo
     morningLessons: 0,
     afternoonLessons: 0,
     eveningStudy: 0,
-    breakSlot: ''
+    breakSlot: '',
+    fixedActivities: []
   }
 }
 
@@ -1098,6 +1274,61 @@ const gradeOrderMap: Record<string, number> = {
   八年级: 8,
   九年级: 9
 }
+const gradeLabels = Object.entries(gradeOrderMap).sort(([, a], [, b]) => a - b).map(([grade]) => grade)
+const termImportDialogVisible = ref(false)
+const termImportForm = reactive({ sourceTerm: '', promoteGrades: false })
+
+function normalizeClassDisplayName(grade: string, classNo: number, rawClassName: string): string {
+  const trimmedGrade = String(grade || '').trim()
+  const fallback = `${Number.isFinite(classNo) && classNo > 0 ? classNo : ''}班`.trim()
+  const raw = String(rawClassName || '').trim()
+  if (!raw) return fallback || '未命名班级'
+
+  let normalized = raw
+  if (trimmedGrade && normalized.startsWith(trimmedGrade)) {
+    normalized = normalized.slice(trimmedGrade.length).trim()
+  }
+  const numericOnly = normalized.match(/^(\d+)$/)
+  if (numericOnly) {
+    normalized = `${numericOnly[1]}班`
+  }
+  if (!normalized.endsWith('班') && /^\d+$/.test(normalized.replace(/班$/, ''))) {
+    normalized = `${normalized.replace(/班$/, '')}班`
+  }
+  return normalized || fallback || '未命名班级'
+}
+
+function formatClassDisplayName(classItem: Pick<ClassRecord, 'grade' | 'className'> | null | undefined): string {
+  if (!classItem) return ''
+  const grade = String(classItem.grade || '').trim()
+  const className = String(classItem.className || '').trim()
+  if (!grade) return className
+  if (!className) return grade
+  return `${grade} | ${className}`
+}
+
+function normalizeClassRecords(list: ClassRecord[]): ClassRecord[] {
+  return list
+    .map((item) => {
+      const grade = String(item.grade || '').trim()
+      const classNo = Number(item.classNo)
+      return {
+        ...item,
+        grade,
+        classNo: Number.isFinite(classNo) && classNo > 0 ? Math.floor(classNo) : 1,
+        className: normalizeClassDisplayName(grade, classNo, item.className)
+      }
+    })
+    .filter((item) => item.grade && item.className)
+}
+
+function getCampusDisplayName(campusId: string): string {
+  return campuses.value.find((item) => item.id === campusId)?.name ?? ''
+}
+
+function compareClassCampus(a: ClassRecord, b: ClassRecord): number {
+  return getCampusDisplayName(a.campusId).localeCompare(getCampusDisplayName(b.campusId), 'zh-CN')
+}
 
 const currentClassHourRows = computed(() =>
   classHourRows.value
@@ -1116,11 +1347,9 @@ const resetGradeTargetLabel = computed(() =>
 const classHoursBatchStore = ref<Record<string, ClassHoursBatchDraft>>({})
 const createEmptyClassHoursBatchDraft = (): ClassHoursBatchDraft => ({
   weeklyDays: null,
-  morningStudy: null,
   morningLessons: null,
   afternoonLessons: null,
-  eveningStudy: null,
-  breakSlot: null
+  fixedActivities: null
 })
 const classHoursBatchForm = reactive<ClassHoursBatchDraft>(createEmptyClassHoursBatchDraft())
 
@@ -1134,21 +1363,13 @@ function applyClassHoursBatchDraftToForm(draft: ClassHoursBatchDraft | null | un
     return
   }
   classHoursBatchForm.weeklyDays = typeof draft.weeklyDays === 'number' ? draft.weeklyDays : null
-  classHoursBatchForm.morningStudy = typeof draft.morningStudy === 'number' ? draft.morningStudy : null
   classHoursBatchForm.morningLessons = typeof draft.morningLessons === 'number' ? draft.morningLessons : null
   classHoursBatchForm.afternoonLessons = typeof draft.afternoonLessons === 'number' ? draft.afternoonLessons : null
-  classHoursBatchForm.eveningStudy = typeof draft.eveningStudy === 'number' ? draft.eveningStudy : null
-  classHoursBatchForm.breakSlot = typeof draft.breakSlot === 'string' ? draft.breakSlot : null
+  classHoursBatchForm.fixedActivities = draft.fixedActivities ? cloneFixedActivities(draft.fixedActivities) : null
 }
 
 function isClassHoursBatchFormReady(): boolean {
-  return (
-    classHoursBatchForm.weeklyDays !== null &&
-    classHoursBatchForm.morningStudy !== null &&
-    classHoursBatchForm.morningLessons !== null &&
-    classHoursBatchForm.afternoonLessons !== null &&
-    classHoursBatchForm.eveningStudy !== null
-  )
+  return Object.values(classHoursBatchForm).some((value) => value !== null)
 }
 
 function syncClassHoursBatchFormBySelection(): void {
@@ -1173,11 +1394,9 @@ function rememberClassHoursBatchDraft(): void {
     ...classHoursBatchStore.value,
     [key]: {
       weeklyDays: classHoursBatchForm.weeklyDays,
-      morningStudy: classHoursBatchForm.morningStudy,
       morningLessons: classHoursBatchForm.morningLessons,
       afternoonLessons: classHoursBatchForm.afternoonLessons,
-      eveningStudy: classHoursBatchForm.eveningStudy,
-      breakSlot: classHoursBatchForm.breakSlot ?? ''
+      fixedActivities: classHoursBatchForm.fixedActivities ? cloneFixedActivities(classHoursBatchForm.fixedActivities) : null
     }
   }
 }
@@ -1235,14 +1454,26 @@ const arrangementStage = computed<CourseScope>(() => {
   return (gradeOrderMap[arrangementGrade.value] ?? 99) <= 6 ? '小学' : '初中'
 })
 
-const arrangementCourses = computed(() =>
-  courses.value.filter(
-    (item) =>
-      item.name !== '自习' &&
-      item.scopes.includes(arrangementStage.value) &&
-      isCourseVisibleInCampus(item, arrangementCampusId.value)
-  )
-)
+function arrangementCoursesForScope(campusId: string, grade: string): CourseItem[] {
+  const stage =
+    classRecords.value.find((item) => item.campusId === campusId && item.grade === grade)?.stage ??
+    ((gradeOrderMap[grade] ?? 99) <= 6 ? '小学' : '初中')
+  return [...courses.value]
+    .filter(
+      (item) =>
+        item.name !== '自习' &&
+        item.scopes.includes(stage) &&
+        isCourseVisibleInCampus(item, campusId)
+    )
+    .sort(
+      (a, b) =>
+        Number(a.orderNo || Number.MAX_SAFE_INTEGER) - Number(b.orderNo || Number.MAX_SAFE_INTEGER) ||
+        a.name.localeCompare(b.name, 'zh-Hans-CN') ||
+        a.id.localeCompare(b.id)
+    )
+}
+
+const arrangementAvailableCourses = computed(() => arrangementCoursesForScope(arrangementCampusId.value, arrangementGrade.value))
 
 const arrangementGradeOptions = computed(() => {
   const uniqueGrades = Array.from(new Set(classRecords.value.map((item) => item.grade)))
@@ -1266,7 +1497,24 @@ const arrangementHasClasses = computed(() => arrangementClassNames.value.length 
 const arrangementRows = ref<ArrangementRow[]>([])
 const arrangementBatchValues = ref<Record<string, number | null>>({})
 const arrangementScopeStore = ref<Record<string, ArrangementScopeState>>({})
+const arrangementImportInput = ref<HTMLInputElement | null>(null)
 const arrangementScopeKey = computed(() => `${arrangementCampusId.value}::${arrangementGrade.value}`)
+const arrangementHiddenCourseIds = computed(
+  () => new Set(arrangementScopeStore.value[arrangementScopeKey.value]?.hiddenCourseIds ?? [])
+)
+const arrangementCourses = computed(() =>
+  arrangementAvailableCourses.value.filter((course) => !arrangementHiddenCourseIds.value.has(course.id))
+)
+const zeroArrangementCourses = computed(() =>
+  arrangementCourses.value.filter((course) =>
+    arrangementRows.value.every((row) => Number(row.values[course.id] ?? 0) === 0)
+  )
+)
+const arrangementCourseAddDialogVisible = ref(false)
+const selectedArrangementCourseIds = ref<string[]>([])
+const addableArrangementCourses = computed(() =>
+  arrangementAvailableCourses.value.filter((course) => arrangementHiddenCourseIds.value.has(course.id))
+)
 const activeArrangementScopeKey = ref('')
 const basicDataHydrated = ref(false)
 
@@ -1326,7 +1574,8 @@ function applyArrangementScopeByKey(scopeKey: string): void {
     ...arrangementScopeStore.value,
     [scopeKey]: {
       rows: cloneArrangementRows(normalized.rows),
-      batchValues: cloneArrangementBatchValues(normalized.batchValues)
+      batchValues: cloneArrangementBatchValues(normalized.batchValues),
+      hiddenCourseIds: [...(stored?.hiddenCourseIds ?? [])]
     }
   }
   activeArrangementScopeKey.value = scopeKey
@@ -1348,7 +1597,8 @@ function persistCurrentArrangementScope(): void {
     ...arrangementScopeStore.value,
     [scopeKey]: {
       rows: cloneArrangementRows(normalized.rows),
-      batchValues: cloneArrangementBatchValues(normalized.batchValues)
+      batchValues: cloneArrangementBatchValues(normalized.batchValues),
+      hiddenCourseIds: [...(arrangementScopeStore.value[scopeKey]?.hiddenCourseIds ?? [])]
     }
   }
   activeArrangementScopeKey.value = scopeKey
@@ -1375,12 +1625,10 @@ const arrangementGradeHourRow = computed(() => {
 
 function getClassHourTotalLessons(row: {
   weeklyDays: number
-  morningStudy: number
   morningLessons: number
   afternoonLessons: number
-  eveningStudy: number
 }): number {
-  const lessonsPerDay = row.morningStudy + row.morningLessons + row.afternoonLessons + row.eveningStudy
+  const lessonsPerDay = row.morningLessons + row.afternoonLessons
   return row.weeklyDays * lessonsPerDay
 }
 
@@ -1427,6 +1675,78 @@ const currentSchoolYearLabel = computed(() => {
   return current.yearName
 })
 
+function cloneTermData<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function createTermDataSnapshot(): TermDataSnapshot {
+  return {
+    courses: cloneTermData(courses.value),
+    roomRecords: cloneTermData(roomRecords.value),
+    classRoomMappings: cloneTermData(classRoomMappings.value),
+    teacherRecords: cloneTermData(teacherRecords.value),
+    studentRecords: cloneTermData(studentRecords.value),
+    groupRecords: cloneTermData(groupRecords.value),
+    teachingAssignments: cloneTermData(teachingAssignments.value),
+    classRecords: cloneTermData(classRecords.value),
+    classHourRows: cloneTermData(classHourRows.value),
+    classHourClassRows: cloneTermData(classHourClassRows.value),
+    selectedHoursCampusId: selectedHoursCampusId.value,
+    selectedHoursEducationSystem: selectedHoursEducationSystem.value,
+    arrangementCampusId: arrangementCampusId.value,
+    arrangementGrade: arrangementGrade.value,
+    arrangementRows: cloneTermData(arrangementRows.value),
+    arrangementBatchValues: cloneTermData(arrangementBatchValues.value),
+    arrangementScopes: cloneTermData(arrangementScopeStore.value),
+    classHoursBatchDrafts: cloneTermData(classHoursBatchStore.value)
+  }
+}
+
+function createEmptyTermDataSnapshot(): TermDataSnapshot {
+  return {
+    courses: [],
+    roomRecords: [],
+    classRoomMappings: [],
+    teacherRecords: [],
+    studentRecords: [],
+    groupRecords: [],
+    teachingAssignments: [],
+    classRecords: [],
+    classHourRows: [],
+    classHourClassRows: [],
+    selectedHoursCampusId: campuses.value[0]?.id ?? '',
+    selectedHoursEducationSystem: campuses.value[0]?.educationSystem ?? '小学',
+    arrangementCampusId: campuses.value[0]?.id ?? '',
+    arrangementGrade: '',
+    arrangementRows: [],
+    arrangementBatchValues: {},
+    arrangementScopes: {},
+    classHoursBatchDrafts: {}
+  }
+}
+
+function applyTermDataSnapshot(snapshot: TermDataSnapshot): void {
+  courses.value = cloneTermData(snapshot.courses)
+  roomRecords.value = cloneTermData(snapshot.roomRecords)
+  classRoomMappings.value = cloneTermData(snapshot.classRoomMappings)
+  teacherRecords.value = cloneTermData(snapshot.teacherRecords)
+  studentRecords.value = cloneTermData(snapshot.studentRecords)
+  groupRecords.value = cloneTermData(snapshot.groupRecords)
+  teachingAssignments.value = cloneTermData(snapshot.teachingAssignments)
+  classRecords.value = cloneTermData(snapshot.classRecords)
+  classHourRows.value = cloneTermData(snapshot.classHourRows)
+  classHourClassRows.value = cloneTermData(snapshot.classHourClassRows)
+  selectedHoursCampusId.value = snapshot.selectedHoursCampusId
+  selectedHoursEducationSystem.value = snapshot.selectedHoursEducationSystem
+  arrangementCampusId.value = snapshot.arrangementCampusId
+  arrangementGrade.value = snapshot.arrangementGrade
+  arrangementRows.value = cloneTermData(snapshot.arrangementRows)
+  arrangementBatchValues.value = cloneTermData(snapshot.arrangementBatchValues)
+  arrangementScopeStore.value = cloneTermData(snapshot.arrangementScopes)
+  classHoursBatchStore.value = cloneTermData(snapshot.classHoursBatchDrafts ?? {})
+  syncClassHoursBatchFormBySelection()
+}
+
 function semesterSpanMethod({ row, columnIndex }: { row: SemesterTableRow; columnIndex: number }): [number, number] {
   if (columnIndex === 0 || columnIndex === 1 || columnIndex === 2 || columnIndex === 6) {
     if (row._semesterIndex === 0) {
@@ -1465,6 +1785,7 @@ const defaultBasicDataSnapshot: BasicDataSnapshot = {
   arrangementBatchValues: JSON.parse(JSON.stringify(arrangementBatchValues.value)),
   arrangementScopes: {},
   classHoursBatchDrafts: {},
+  termData: {},
   _savedAt: Date.now()
 }
 
@@ -1476,6 +1797,7 @@ function createBasicDataSnapshot(): BasicDataSnapshot {
       batchValues: cloneArrangementBatchValues(arrangementBatchValues.value)
     }
   }
+  const currentTermData = createTermDataSnapshot()
   return {
     campuses: campuses.value,
     schoolYears: schoolYears.value,
@@ -1500,6 +1822,10 @@ function createBasicDataSnapshot(): BasicDataSnapshot {
     arrangementBatchValues: arrangementBatchValues.value,
     arrangementScopes: nextScopes,
     classHoursBatchDrafts: classHoursBatchStore.value,
+    termData: {
+      ...termDataSnapshots.value,
+      ...(selectedTerm.value ? { [selectedTerm.value]: currentTermData } : {})
+    },
     _savedAt: Date.now()
   }
 }
@@ -1569,7 +1895,9 @@ function loadBasicDataSnapshot(): void {
       roomTypes.value,
       campuses.value
     )
-    classRecords.value = Array.isArray(parsed.classRecords) ? parsed.classRecords : defaultBasicDataSnapshot.classRecords
+    classRecords.value = normalizeClassRecords(
+      Array.isArray(parsed.classRecords) ? parsed.classRecords : defaultBasicDataSnapshot.classRecords
+    )
     classRoomMappings.value = normalizeClassRoomMappings(
       Array.isArray(parsed.classRoomMappings) ? parsed.classRoomMappings : defaultBasicDataSnapshot.classRoomMappings,
       classRecords.value,
@@ -1648,6 +1976,18 @@ function loadBasicDataSnapshot(): void {
     }
     applyArrangementScopeByKey(activeScopeKey)
     syncClassHourRowsFromClassSettings()
+    termDataSnapshots.value =
+      parsed.termData && typeof parsed.termData === 'object'
+        ? (cloneTermData(parsed.termData) as Record<string, TermDataSnapshot>)
+        : {}
+    activeTermDataKey.value = selectedTerm.value
+    const currentTermSnapshot = termDataSnapshots.value[selectedTerm.value]
+    if (!currentTermSnapshot && selectedTerm.value) {
+      termDataSnapshots.value = {
+        ...termDataSnapshots.value,
+        [selectedTerm.value]: createTermDataSnapshot()
+      }
+    }
     basicDataHydrated.value = true
   }
 
@@ -1661,6 +2001,24 @@ function loadBasicDataSnapshot(): void {
 }
 
 loadBasicDataSnapshot()
+
+watch(selectedTerm, (nextTerm) => {
+  if (!basicDataHydrated.value || !nextTerm || nextTerm === activeTermDataKey.value) return
+
+  const previousTerm = activeTermDataKey.value
+  persistCurrentArrangementScope()
+  const currentSnapshot = createTermDataSnapshot()
+  const nextSnapshots = { ...termDataSnapshots.value }
+  if (previousTerm) nextSnapshots[previousTerm] = currentSnapshot
+
+  const targetSnapshot = nextSnapshots[nextTerm] ?? createEmptyTermDataSnapshot()
+  nextSnapshots[nextTerm] = targetSnapshot
+  termDataSnapshots.value = nextSnapshots
+  applyTermDataSnapshot(targetSnapshot)
+  activeTermDataKey.value = nextTerm
+  window.dispatchEvent(new CustomEvent('schedule-term-changed', { detail: nextTerm }))
+  notify.success(`已切换至「${selectedTermOption.value?.label ?? nextTerm}」，数据已按学期独立保存。`)
+})
 
 watch(
   [
@@ -1737,11 +2095,9 @@ function resolveMenuStatus(menu: BaseMenu): BaseMenu['status'] {
   if (menu.key === 'class-hours') {
     const hasConfigured = [...classHourRows.value, ...classHourClassRows.value].some(
       (item) =>
-        Number(item.weeklyDays || 0) > 0 ||
-        Number(item.morningStudy || 0) > 0 ||
-        Number(item.morningLessons || 0) > 0 ||
-        Number(item.afternoonLessons || 0) > 0 ||
-        Number(item.eveningStudy || 0) > 0
+        Number(item.weeklyDays || 0) > 0 &&
+        Number(item.morningLessons || 0) > 0 &&
+        Number(item.afternoonLessons || 0) > 0
     )
     return hasConfigured ? 'done' : 'required'
   }
@@ -1844,6 +2200,13 @@ watch(
   { deep: true }
 )
 
+watch(selectedHoursCampusId, (campusId) => {
+  const campus = campuses.value.find((item) => item.id === campusId)
+  if (campus?.educationSystem) {
+    selectedHoursEducationSystem.value = campus.educationSystem
+  }
+}, { immediate: true })
+
 watch([selectedHoursCampusId, selectedHoursEducationSystem], syncClassHoursBatchFormBySelection, { immediate: true })
 
 watch(
@@ -1875,7 +2238,7 @@ watch(
 )
 
 watch(
-  [arrangementCourses, arrangementClassNames],
+  [arrangementAvailableCourses, arrangementClassNames],
   () => {
     if (!basicDataHydrated.value) return
     persistCurrentArrangementScope()
@@ -1895,7 +2258,8 @@ watch(
         ...arrangementScopeStore.value,
         [sourcePrev]: {
           rows: cloneArrangementRows(arrangementRows.value),
-          batchValues: cloneArrangementBatchValues(arrangementBatchValues.value)
+          batchValues: cloneArrangementBatchValues(arrangementBatchValues.value),
+          hiddenCourseIds: [...(arrangementScopeStore.value[sourcePrev]?.hiddenCourseIds ?? [])]
         }
       }
     }
@@ -1908,15 +2272,36 @@ const currentClassRecords = computed(() => {
   return classRecords.value
     .filter(
       (item) =>
-        item.campusId === classSettingForm.campusId &&
-        item.stage === classSettingForm.stage &&
-        classSettingForm.grades.includes(item.grade)
+        (classTableCampusId.value === '__all__' ? true : item.campusId === classTableCampusId.value) &&
+        item.stage === classSettingForm.stage
     )
     .sort((a, b) => {
       const gradeCompare = (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999)
       if (gradeCompare !== 0) return gradeCompare
       return a.classNo - b.classNo
     })
+})
+
+const classTableGradeFilterOptions = computed(() =>
+  Array.from(new Set(currentClassRecords.value.map((item) => item.grade)))
+    .sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+    .map((grade) => ({ text: grade, value: grade }))
+)
+
+const classTableView = computed(() => {
+  const gradeFilterSet = new Set(classTableGradeFilter.value)
+  return currentClassRecords.value.filter((item) => {
+    if (gradeFilterSet.size > 0 && !gradeFilterSet.has(item.grade)) {
+      return false
+    }
+    return true
+  })
+})
+
+const pagedClassTableView = computed(() => {
+  const start = (classPage.value - 1) * classPageSize.value
+  const end = start + classPageSize.value
+  return classTableView.value.slice(start, end)
 })
 
 const gradeClassStats = computed(() => {
@@ -1938,7 +2323,7 @@ const gradeClassStats = computed(() => {
 })
 
 watch(
-  currentClassRecords,
+  classTableView,
   async (rows) => {
     const visibleIdSet = new Set(rows.map((item) => item.id))
     selectedClassIds.value = selectedClassIds.value.filter((id) => visibleIdSet.has(id))
@@ -1952,6 +2337,22 @@ watch(
   },
   { flush: 'post' }
 )
+
+watch(
+  [classTableView, classPageSize],
+  ([rows]) => {
+    const total = rows.length
+    const maxPage = Math.max(1, Math.ceil(total / classPageSize.value))
+    if (classPage.value > maxPage) {
+      classPage.value = maxPage
+    }
+  },
+  { immediate: true }
+)
+
+watch([classTableCampusId, classTableGradeFilter], () => {
+  classPage.value = 1
+})
 
 function batchCreateClasses(): void {
   if (classSettingForm.grades.length === 0) {
@@ -1985,7 +2386,7 @@ function batchCreateClasses(): void {
         stage: classSettingForm.stage,
         grade,
         classNo,
-        className: `${grade}${classNo}班`
+        className: `${classNo}班`
       })
     }
   })
@@ -2006,7 +2407,7 @@ async function renameClass(record: ClassRecord): Promise<void> {
     item.id === record.id
       ? {
           ...item,
-          className
+          className: normalizeClassDisplayName(item.grade, item.classNo, className)
         }
       : item
   )
@@ -2027,7 +2428,7 @@ async function confirmDelete(message: string): Promise<boolean> {
 }
 
 async function removeClass(record: ClassRecord): Promise<void> {
-  const confirmed = await confirmDelete(`确认删除班级「${record.className}」吗？`)
+  const confirmed = await confirmDelete(`确认删除班级「${formatClassDisplayName(record)}」吗？`)
   if (!confirmed) return
   removeClassesByIds([record.id])
 }
@@ -2414,6 +2815,7 @@ function createCourse(): void {
   courseDialogMode.value = 'create'
   courseEditingId.value = ''
   courseDialogError.value = ''
+  courseForm.orderNo = ''
   courseForm.name = ''
   courseForm.shortName = ''
   courseForm.subject = ''
@@ -2429,6 +2831,7 @@ function editCourse(course: CourseItem): void {
   courseDialogMode.value = 'edit'
   courseEditingId.value = course.id
   courseDialogError.value = ''
+  courseForm.orderNo = String(course.orderNo)
   courseForm.name = course.name
   courseForm.shortName = course.shortName
   courseForm.subject = course.subject
@@ -2442,6 +2845,13 @@ function closeCourseDialog(): void {
 }
 
 async function submitCourseDialog(): Promise<void> {
+  const orderInput = courseForm.orderNo.trim()
+  const orderNoRaw = Number(orderInput)
+  const orderNo = orderInput
+    ? Number.isFinite(orderNoRaw) && orderNoRaw > 0
+      ? Math.floor(orderNoRaw)
+      : 0
+    : nextCourseOrderNo.value
   const name = courseForm.name.trim()
   const subject = courseForm.subject.trim() || name
   const shortName = courseForm.shortName.trim()
@@ -2450,6 +2860,11 @@ async function submitCourseDialog(): Promise<void> {
 
   if (!name) {
     courseDialogError.value = '课程名称为必填项。'
+    return
+  }
+
+  if (!orderNo) {
+    courseDialogError.value = '序号请输入大于 0 的整数，或留空自动递增。'
     return
   }
 
@@ -2468,6 +2883,7 @@ async function submitCourseDialog(): Promise<void> {
   if (courseDialogMode.value === 'create') {
     courses.value.unshift({
       id: `course-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      orderNo,
       name,
       shortName,
       subject,
@@ -2484,6 +2900,7 @@ async function submitCourseDialog(): Promise<void> {
       item.id === courseEditingId.value
         ? {
             ...item,
+            orderNo,
             name,
             shortName,
             subject,
@@ -2536,13 +2953,6 @@ async function removeCoursesBatch(): Promise<void> {
   const saved = await persistBasicData(undefined, { silentSuccess: true })
   if (saved) {
     await verifyCoursePersistence(`已删除 ${deleted} 门课程。`)
-  }
-}
-
-async function saveCourseData(): Promise<void> {
-  const saved = await persistBasicData(undefined, { silentSuccess: true })
-  if (saved) {
-    await verifyCoursePersistence('课程数据已保存。')
   }
 }
 
@@ -2975,7 +3385,7 @@ async function saveClassRoomMapData(): Promise<void> {
 }
 
 function downloadClassRoomMapTemplate(): void {
-  exportCsv('班级教室导入模板.csv', [['校区', '年级', '班级', '教室'], ['本校区', '一年级', '一年级1班', '101']])
+  exportCsv('班级教室导入模板.csv', [['校区', '年级', '班级', '教室'], ['本校区', '一年级', '1班', '101']])
 }
 
 function exportClassRoomMapData(): void {
@@ -3059,7 +3469,8 @@ const teacherImportError = ref('')
 const teacherColumns = ['教师ID', '姓名', '学科', '教研与活动分组', '校区']
 const studentImportInput = ref<HTMLInputElement | null>(null)
 const studentImportError = ref('')
-const studentColumns = ['学生ID', '年级', '班级', '姓名', '性别', '班内学号']
+const studentImportColumns = ['年级', '班级', '姓名', '性别', '班内学号']
+const studentExportColumns = ['学生ID', '年级', '班级', '姓名', '性别', '班内学号']
 const teacherSearchKeyword = ref('')
 const teacherPage = ref(1)
 const teacherPageSize = ref(15)
@@ -3161,6 +3572,8 @@ const studentEntryClassId = ref('')
 const studentPage = ref(1)
 const studentPageSize = ref(15)
 const studentPageSizeOptions = [15, 30, 50, 100]
+const studentTableRef = ref<TableInstance | null>(null)
+const selectedStudentIds = ref<string[]>([])
 const studentCreateDialogVisible = ref(false)
 const studentCreateDialogError = ref('')
 const studentEditDialogVisible = ref(false)
@@ -3245,6 +3658,8 @@ const pagedStudentRecordView = computed(() => {
   const end = start + studentPageSize.value
   return studentRecordView.value.slice(start, end)
 })
+
+const selectedStudentCount = computed(() => selectedStudentIds.value.length)
 
 watch(
   campuses,
@@ -3412,63 +3827,29 @@ async function removeStudent(row: StudentRecord): Promise<void> {
   const confirmed = await confirmDelete(`确认删除学生「${row.name}」吗？`)
   if (!confirmed) return
   studentRecords.value = studentRecords.value.filter((item) => item.id !== row.id)
+  selectedStudentIds.value = selectedStudentIds.value.filter((id) => id !== row.id)
   await persistBasicData('学生已删除。')
 }
 
-async function generateVirtualStudentsPerClass(count = 50): Promise<void> {
-  const campusId = studentEntryCampusId.value || campuses.value[0]?.id || ''
-  if (!campusId) {
-    notify.warning('请先配置校区。')
-    return
-  }
-  const classes = classRecords.value
-    .filter((item) => item.campusId === campusId)
-    .sort((a, b) => (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999) || a.classNo - b.classNo)
-
-  if (classes.length === 0) {
-    notify.warning('当前校区暂无班级，请先在班级设置中生成班级。')
-    return
-  }
-
-  const existingIds = studentRecords.value.map((item) => item.id)
-  const classIdSet = new Set(classes.map((item) => item.id))
-  const kept = studentRecords.value.filter((item) => !classIdSet.has(item.classId))
-  const generated: StudentRecord[] = []
-
-  classes.forEach((classInfo) => {
-    for (let no = 1; no <= count; no += 1) {
-      const id = generateStudentId(existingIds)
-      existingIds.push(id)
-      generated.push({
-        id,
-        campusId: classInfo.campusId,
-        grade: classInfo.grade,
-        classId: classInfo.id,
-        name: `学生${classInfo.grade}${classInfo.classNo}班${String(no).padStart(2, '0')}`,
-        gender: Math.random() < 0.5 ? '男' : '女',
-        classStudentNo: no
-      })
-    }
-  })
-
-  studentRecords.value = [...kept, ...generated]
-  await persistBasicData(`已生成虚拟学生：${classes.length} 个班级，每班 ${count} 人。`)
+function onStudentSelectionChange(rows: StudentRecord[]): void {
+  selectedStudentIds.value = rows.map((item) => item.id)
 }
 
-async function clearVirtualStudents(): Promise<void> {
-  const virtualPattern = /^学生.+班\d{2}$/
-  const targets = studentRecords.value.filter((item) => virtualPattern.test(item.name))
-  if (targets.length === 0) {
-    notify.info('当前没有可清除的虚拟学生。')
+async function removeStudentsBatch(): Promise<void> {
+  const ids = Array.from(new Set(selectedStudentIds.value))
+  if (ids.length === 0) {
+    notify.warning('请先选择要删除的学生。')
     return
   }
 
-  const confirmed = await confirmDelete(`确认清除 ${targets.length} 名虚拟学生吗？`)
+  const confirmed = await confirmDelete(`确认批量删除已选 ${ids.length} 名学生吗？`)
   if (!confirmed) return
 
-  const removeIds = new Set(targets.map((item) => item.id))
-  studentRecords.value = studentRecords.value.filter((item) => !removeIds.has(item.id))
-  await persistBasicData(`已清除 ${targets.length} 名虚拟学生。`)
+  const idSet = new Set(ids)
+  studentRecords.value = studentRecords.value.filter((item) => !idSet.has(item.id))
+  selectedStudentIds.value = []
+  studentTableRef.value?.clearSelection()
+  await persistBasicData(`已删除 ${ids.length} 名学生。`)
 }
 
 function csvEscape(value: string): string {
@@ -3496,6 +3877,15 @@ async function exportExcel(filename: string, rows: string[][], sheetName = 'Shee
   XLSX.writeFile(workbook, filename)
 }
 
+async function exportExcelWorkbook(filename: string, sheets: Array<{ name: string; rows: string[][] }>): Promise<void> {
+  const workbook = XLSX.utils.book_new()
+  sheets.forEach((sheet) => {
+    const worksheet = XLSX.utils.aoa_to_sheet(sheet.rows)
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name.slice(0, 31))
+  })
+  XLSX.writeFile(workbook, filename)
+}
+
 async function parseSpreadsheetRows(file: File): Promise<string[][]> {
   const fileBuffer = await file.arrayBuffer()
   const workbook = XLSX.read(fileBuffer, { type: 'array' })
@@ -3509,6 +3899,23 @@ async function parseSpreadsheetRows(file: File): Promise<string[][]> {
     blankrows: false
   }) as Array<Array<string | number | boolean | null | undefined>>
   return rows.map((row) => row.map((value) => String(value ?? '').trim())).filter((row) => row.some(Boolean))
+}
+
+async function parseSpreadsheetWorkbook(file: File): Promise<Array<{ name: string; rows: string[][] }>> {
+  const fileBuffer = await file.arrayBuffer()
+  const workbook = XLSX.read(fileBuffer, { type: 'array' })
+  return workbook.SheetNames.map((name) => {
+    const sheet = workbook.Sheets[name]
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: '',
+      blankrows: false
+    }) as Array<Array<string | number | boolean | null | undefined>>
+    return {
+      name: name.trim(),
+      rows: rows.map((row) => row.map((value) => String(value ?? '').trim())).filter((row) => row.some(Boolean))
+    }
+  })
 }
 
 async function downloadTeacherTemplate(): Promise<void> {
@@ -3534,11 +3941,15 @@ async function exportTeacherData(): Promise<void> {
   }
 }
 
-function downloadStudentTemplate(): void {
-  exportCsv('学生导入模板.csv', [studentColumns, ['', '一年级', '一年级1班', '张三', '男', '1']])
+async function downloadStudentTemplate(): Promise<void> {
+  try {
+    await exportExcel('学生导入模板.xlsx', [studentImportColumns, ['一年级', '1班', '张三', '男', '1']], '学生模板')
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : '下载模板失败，请稍后重试。')
+  }
 }
 
-function exportStudentData(): void {
+async function exportStudentData(): Promise<void> {
   const classMap = new Map(classRecords.value.map((item) => [item.id, item] as const))
   const rows = studentRecordView.value.map((item) => [
     item.id,
@@ -3548,12 +3959,16 @@ function exportStudentData(): void {
     item.gender,
     String(item.classStudentNo)
   ])
-  exportCsv('学生数据导出.csv', [studentColumns, ...rows])
+  try {
+    await exportExcel('学生数据导出.xlsx', [studentExportColumns, ...rows], '学生数据')
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : '导出失败，请稍后重试。')
+  }
 }
 
 async function downloadCourseTemplate(): Promise<void> {
   try {
-    await exportExcel('学科导入模板.xlsx', [COURSE_COLUMNS, ['语文', '', '语文', '小学', '本校区']], '学科模板')
+    await exportExcel('学科导入模板.xlsx', [COURSE_COLUMNS, [1, '语文', '', '语文', '小学', '本校区']], '学科模板')
   } catch (error) {
     notify.error(error instanceof Error ? error.message : '下载模板失败，请稍后重试。')
   }
@@ -3562,6 +3977,7 @@ async function downloadCourseTemplate(): Promise<void> {
 async function exportCourseData(): Promise<void> {
   const campusNameById = new Map(campuses.value.map((item) => [item.id, item.name] as const))
   const rows = courses.value.map((item) => [
+    item.orderNo,
     item.name,
     item.shortName,
     item.subject,
@@ -3633,7 +4049,7 @@ function parseTeacherRows(rows: string[][]): TeacherRecord[] {
       const matchedCampusByName = campuses.value.find((campus) => campus.name === campusNameOrId)
       const matchedCampusById = campuses.value.find((campus) => campus.id === campusNameOrId)
       const campusId = matchedCampusByName?.id ?? matchedCampusById?.id ?? fallbackCampusId
-      const id = idRaw || generateNextTeacherId(allocatedIds)
+      const id = idRaw || generateTeacherId(allocatedIds)
       allocatedIds.push(id)
 
       return {
@@ -3647,31 +4063,21 @@ function parseTeacherRows(rows: string[][]): TeacherRecord[] {
     .filter((item): item is TeacherRecord => Boolean(item))
 }
 
-function parseStudentCsv(content: string, campusId: string): StudentRecord[] {
-  const lines = content
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
+function parseStudentRows(rows: string[][], campusId: string): StudentRecord[] {
+  if (rows.length <= 1) return []
 
-  if (lines.length <= 1) return []
-
-  const header = parseCsvLine(lines[0] ?? '')
-  const hasIdColumn = (header[0] ?? '').includes('学生ID')
   const classPool = classRecords.value.filter((item) => item.campusId === campusId)
   const classFallbackPool = classPool.length > 0 ? classPool : classRecords.value
   const allocatedIds = studentRecords.value.map((item) => item.id)
 
-  return lines
+  return rows
     .slice(1)
-    .map((line, index) => {
-      const columns = parseCsvLine(line)
-      const idRaw = hasIdColumn ? (columns[0] ?? '').trim() : ''
-      const grade = (hasIdColumn ? columns[1] : columns[0] ?? '').trim()
-      const className = (hasIdColumn ? columns[2] : columns[1] ?? '').trim()
-      const name = (hasIdColumn ? columns[3] : columns[2] ?? '').trim()
-      const genderInput = (hasIdColumn ? columns[4] : columns[3] ?? '').trim()
-      const noInput = (hasIdColumn ? columns[5] : columns[4] ?? '').trim()
+    .map((columns, index) => {
+      const grade = (columns[0] ?? '').trim()
+      const className = normalizeClassDisplayName(grade, Number.NaN, (columns[1] ?? '').trim())
+      const name = (columns[2] ?? '').trim()
+      const genderInput = (columns[3] ?? '').trim()
+      const noInput = (columns[4] ?? '').trim()
       if (!grade || !className || !name) return null
 
       const classInfo = classFallbackPool.find((item) => item.grade === grade && item.className === className)
@@ -3680,7 +4086,7 @@ function parseStudentCsv(content: string, campusId: string): StudentRecord[] {
       const classStudentNoRaw = Number(noInput)
       const classStudentNo =
         Number.isFinite(classStudentNoRaw) && classStudentNoRaw > 0 ? Math.floor(classStudentNoRaw) : index + 1
-      const id = idRaw || generateStudentId(allocatedIds)
+      const id = generateStudentId(allocatedIds)
       allocatedIds.push(id)
 
       return {
@@ -3700,19 +4106,24 @@ function parseCourseRows(rows: string[][]): CourseItem[] {
   if (rows.length <= 1) return []
   const campusByName = new Map(campuses.value.map((item) => [item.name, item.id] as const))
   const campusIdSet = new Set(campuses.value.map((item) => item.id))
+  const header = rows[0] ?? []
+  const hasOrderColumn = String(header[0] ?? '').includes('序号')
 
   return rows.slice(1).map((columns, index) => {
-    const name = columns[0] ?? ''
-    const shortName = columns[1] ?? ''
-    const subject = columns[2] ?? name
-    const rawScope = columns[3] ?? ''
-    const rawCampus = columns[4] ?? ''
+    const orderOffset = hasOrderColumn ? 1 : 0
+    const orderNoRaw = Number(hasOrderColumn ? columns[0] ?? '' : index + 1)
+    const name = columns[0 + orderOffset] ?? ''
+    const shortName = columns[1 + orderOffset] ?? ''
+    const subject = columns[2 + orderOffset] ?? name
+    const rawScope = columns[3 + orderOffset] ?? ''
+    const rawCampus = columns[4 + orderOffset] ?? ''
     const mappedCampusId = campusByName.get(rawCampus.trim()) ?? ''
     const campusId = mappedCampusId || (campusIdSet.has(rawCampus.trim()) ? rawCampus.trim() : '')
     const normalizedScope = normalizeCourseScopeInput(rawScope)
     const scope: CourseScope = normalizedScope === '初中' ? '初中' : '小学'
     return {
       id: `course-import-${Date.now()}-${index}`,
+      orderNo: Number.isFinite(orderNoRaw) && orderNoRaw > 0 ? Math.floor(orderNoRaw) : index + 1,
       name: name || `未命名学科${index + 1}`,
       shortName: shortName.trim(),
       subject: subject.trim() || name || '未设置',
@@ -3809,27 +4220,26 @@ function handleStudentImport(event: Event): void {
   const file = target.files?.[0]
   if (!file) return
 
-  const reader = new FileReader()
-  reader.onload = () => {
-    const content = String(reader.result ?? '')
-    const campusId = studentEntryCampusId.value || campuses.value[0]?.id || ''
-    const imported = parseStudentCsv(content, campusId)
-    if (imported.length === 0) {
-      studentImportError.value = '未识别到有效学生数据，请检查年级/班级是否已存在。'
-      target.value = ''
-      return
-    }
+  void (async () => {
+    try {
+      const rows = await parseSpreadsheetRows(file)
+      const campusId = studentEntryCampusId.value || campuses.value[0]?.id || ''
+      const imported = parseStudentRows(rows, campusId)
+      if (imported.length === 0) {
+        studentImportError.value = '未识别到有效学生数据，请检查模板格式以及年级/班级是否已存在。'
+        return
+      }
 
-    studentRecords.value = normalizeStudentRecords([...studentRecords.value, ...imported], classRecords.value)
-    studentImportError.value = ''
-    target.value = ''
-    notify.success(`已导入 ${imported.length} 条学生数据（Mock）。`)
-  }
-  reader.onerror = () => {
-    studentImportError.value = '读取文件失败，请重试。'
-    target.value = ''
-  }
-  reader.readAsText(file, 'utf-8')
+      studentRecords.value = normalizeStudentRecords([...studentRecords.value, ...imported], classRecords.value)
+      studentImportError.value = ''
+      notify.success(`已导入 ${imported.length} 条学生数据。`)
+    } catch (error) {
+      studentImportError.value =
+        error instanceof Error ? error.message : '读取文件失败，请检查 Excel 格式后重试。'
+    } finally {
+      target.value = ''
+    }
+  })()
 }
 
 async function removeTeacher(record: TeacherRecord): Promise<void> {
@@ -3882,7 +4292,7 @@ function submitCreateTeacherDialog(): void {
   const campusId = teacherCreateForm.campusId || campuses.value[0]?.id || ''
 
   teacherRecords.value.unshift({
-    id: generateNextTeacherId(teacherRecords.value.map((item) => item.id)),
+    id: generateTeacherId(teacherRecords.value.map((item) => item.id)),
     name,
     subject: '',
     subjectGroup: '',
@@ -4141,6 +4551,7 @@ const teachingBatchDialogError = ref('')
 const teachingBatchCampusId = ref('')
 const teachingBatchGrade = ref('')
 const teachingBatchRows = ref<Array<Record<string, string>>>([])
+const teachingBatchGridRef = ref<HTMLElement | null>(null)
 const teachingBatchDragSelecting = ref(false)
 const teachingBatchDragMoved = ref(false)
 const teachingBatchSelectionAnchor = ref<{ rowIndex: number; field: string } | null>(null)
@@ -4198,15 +4609,51 @@ const teachingAssignmentTeacherOptions = computed(() => {
   return inCampus.length > 0 ? inCampus : teacherRecords.value
 })
 
+function getArrangementWeeklyLessons(classInfo: ClassRecord | null | undefined, courseId: string): number {
+  if (!classInfo) return 0
+  const scopeKey = getArrangementScopeKey(classInfo.campusId, classInfo.grade)
+  const rows = scopeKey === arrangementScopeKey.value ? arrangementRows.value : arrangementScopeStore.value[scopeKey]?.rows ?? []
+  const values = rows.find((row) => row.className === classInfo.className)?.values
+  return Math.max(0, Math.floor(Number(values?.[courseId] ?? 0)))
+}
+
+function getArrangementCoursesForClass(classInfo: ClassRecord | null | undefined): CourseItem[] {
+  if (!classInfo) return []
+  return arrangementCoursesForScope(classInfo.campusId, classInfo.grade).filter(
+    (course) => getArrangementWeeklyLessons(classInfo, course.id) > 0
+  )
+}
+
+function synchronizeTeachingAssignmentsWithArrangement(): number {
+  const classById = new Map(classRecords.value.map((item) => [item.id, item] as const))
+  let removed = 0
+  teachingAssignments.value = teachingAssignments.value.flatMap((assignment) => {
+    const classInfo = classById.get(assignment.classId)
+    if (!classInfo) return [assignment]
+    const weeklyLessons = getArrangementWeeklyLessons(classInfo, assignment.courseId)
+    if (weeklyLessons <= 0) {
+      removed += 1
+      return []
+    }
+    return [{ ...assignment, weeklyLessons }]
+  })
+  return removed
+}
+
 const teachingAssignmentCourseOptions = computed(() => {
   const classInfo = classRecords.value.find((item) => item.id === teachingAssignmentForm.classId)
   if (!classInfo) {
-    return courses.value.filter((item) => isCourseVisibleInCampus(item, teachingAssignmentForm.campusId))
+    return []
   }
-  return courses.value.filter(
-    (item) => item.scopes.includes(classInfo.stage) && isCourseVisibleInCampus(item, classInfo.campusId)
-  )
+  return getArrangementCoursesForClass(classInfo)
 })
+
+const teachingAssignmentPlannedWeeklyLessons = computed(() =>
+  getArrangementWeeklyLessons(
+    classRecords.value.find((item) => item.id === teachingAssignmentForm.classId),
+    teachingAssignmentForm.courseId
+  )
+)
 
 const teachingInfoMatrixClasses = computed(() =>
   classRecords.value
@@ -4217,11 +4664,11 @@ const teachingInfoMatrixClasses = computed(() =>
 const teachingInfoMatrixStage = computed(() => teachingInfoMatrixClasses.value[0]?.stage ?? null)
 
 const teachingInfoMatrixCourses = computed(() => {
-  const stage = teachingInfoMatrixStage.value
-  if (!stage) return []
-  return courses.value.filter(
-    (item) => item.scopes.includes(stage) && isCourseVisibleInCampus(item, teachingInfoCampusId.value)
-  )
+  const courseIds = new Set<string>()
+  teachingInfoMatrixClasses.value.forEach((classInfo) => {
+    getArrangementCoursesForClass(classInfo).forEach((course) => courseIds.add(course.id))
+  })
+  return arrangementCoursesForScope(teachingInfoCampusId.value, teachingInfoGrade.value).filter((course) => courseIds.has(course.id))
 })
 
 const teachingInfoTeacherNameMap = computed(() => new Map(teacherRecords.value.map((item) => [item.id, item.name] as const)))
@@ -4251,11 +4698,11 @@ const teachingBatchStage = computed(() => teachingBatchClasses.value[0]?.stage ?
 const TEACHING_BATCH_HEAD_TEACHER_FIELD = '__headTeacher__'
 
 const teachingBatchCourses = computed(() => {
-  const stage = teachingBatchStage.value
-  if (!stage) return []
-  return courses.value.filter(
-    (item) => item.scopes.includes(stage) && isCourseVisibleInCampus(item, teachingBatchCampusId.value)
-  )
+  const courseIds = new Set<string>()
+  teachingBatchClasses.value.forEach((classInfo) => {
+    getArrangementCoursesForClass(classInfo).forEach((course) => courseIds.add(course.id))
+  })
+  return arrangementCoursesForScope(teachingBatchCampusId.value, teachingBatchGrade.value).filter((course) => courseIds.has(course.id))
 })
 
 const teachingBatchEditableFields = computed(() => [
@@ -4375,8 +4822,16 @@ function getTeachingInfoCellText(classId: string, courseId: string): string {
   return names.length > 0 ? names.join('、') : '设置'
 }
 
+function teachingInfoCourseLabel(course: CourseItem): string {
+  return course.shortName?.trim() || course.name
+}
+
 function hasTeachingInfoCellTeachers(classId: string, courseId: string): boolean {
   return (teachingInfoCellMap.value.get(`${classId}::${courseId}`) ?? []).length > 0
+}
+
+function isTeachingInfoCourseArranged(classRow: ClassRecord, courseId: string): boolean {
+  return getArrangementWeeklyLessons(classRow, courseId) > 0
 }
 
 function classHeadTeacherName(classId: string): string {
@@ -4437,7 +4892,7 @@ async function ensureTeachersExist(
 async function editTeachingInfoCell(classRow: ClassRecord, course: CourseItem): Promise<void> {
   const current = (teachingInfoCellMap.value.get(`${classRow.id}::${course.id}`) ?? []).join('，')
   const value = await askTextInput(
-    `请输入「${classRow.className} - ${course.name}」任课教师，多个请用逗号分隔`,
+    `请输入「${formatClassDisplayName(classRow)} - ${course.name}」任课教师，多个请用逗号分隔`,
     '设置任课教师',
     current
   )
@@ -4458,7 +4913,7 @@ async function editTeachingInfoCell(classRow: ClassRecord, course: CourseItem): 
 
   const existed = teachingAssignments.value.filter((item) => item.classId === classRow.id && item.courseId === course.id)
   const kept = teachingAssignments.value.filter((item) => !(item.classId === classRow.id && item.courseId === course.id))
-  const weeklyByTeacher = new Map(existed.map((item) => [item.teacherId, item.weeklyLessons] as const))
+  const plannedWeeklyLessons = getArrangementWeeklyLessons(classRow, course.id)
   const created = nextTeacherIds.map((teacherId, index) => ({
     id: `ta-cell-${Date.now()}-${index}`,
     campusId: classRow.campusId,
@@ -4466,7 +4921,7 @@ async function editTeachingInfoCell(classRow: ClassRecord, course: CourseItem): 
     classId: classRow.id,
     teacherId,
     courseId: course.id,
-    weeklyLessons: weeklyByTeacher.get(teacherId) ?? 1
+    weeklyLessons: plannedWeeklyLessons
   }))
 
   teachingAssignments.value = [...kept, ...created]
@@ -4477,7 +4932,7 @@ async function editTeachingInfoCell(classRow: ClassRecord, course: CourseItem): 
 async function editClassHeadTeacher(classRow: ClassRecord): Promise<void> {
   const currentName = classHeadTeacherName(classRow.id)
   const value = await askTextInput(
-    `请输入「${classRow.className}」班主任姓名（多个教师请用逗号分隔，将使用第一个）`,
+    `请输入「${formatClassDisplayName(classRow)}」班主任姓名（多个教师请用逗号分隔，将使用第一个）`,
     '设置班主任',
     currentName === '未设置' ? '' : currentName
   )
@@ -4524,12 +4979,13 @@ function openTeachingBatchDialog(): void {
     return
   }
 
-  const stage = classes[0].stage
-  const courseList = courses.value.filter(
-    (item) => item.scopes.includes(stage) && isCourseVisibleInCampus(item, campusId)
-  )
+  const courseIds = new Set<string>()
+  classes.forEach((classInfo) => {
+    getArrangementCoursesForClass(classInfo).forEach((course) => courseIds.add(course.id))
+  })
+  const courseList = arrangementCoursesForScope(campusId, grade).filter((course) => courseIds.has(course.id))
   if (courseList.length === 0) {
-    notify.warning('当前学段暂无课程，请先在课程管理中维护课程。')
+    notify.warning('当前年级尚未在课程安排中配置课时。')
     return
   }
 
@@ -4615,10 +5071,13 @@ function handleTeachingBatchCellMousedown(params: {
   const field = teachingBatchEditableFields.value[params.fieldIndex]?.id ?? ''
   if (!field) return
   if (isTeachingBatchCellEditing(params.rowIndex, field)) return
-  teachingBatchSelectionAnchor.value = { rowIndex: params.rowIndex, field }
+  if (!params.event.shiftKey || !teachingBatchSelectionAnchor.value) {
+    teachingBatchSelectionAnchor.value = { rowIndex: params.rowIndex, field }
+  }
   teachingBatchSelectionFocus.value = { rowIndex: params.rowIndex, field }
   teachingBatchDragSelecting.value = true
   teachingBatchDragMoved.value = false
+  teachingBatchGridRef.value?.focus({ preventScroll: true })
 }
 
 function handleTeachingBatchCellMouseenter(params: {
@@ -4733,8 +5192,24 @@ function pasteToTeachingBatchFrom(rowIndex: number, fieldIndex: number, event: C
   const raw = event.clipboardData?.getData('text/plain') ?? ''
   if (!raw) return
   event.preventDefault()
+  event.stopPropagation()
   const matrix = parsePastedTableText(raw)
   if (matrix.length === 0) return
+
+  const selection = getTeachingBatchSelectionRange()
+  const isSingleValue = matrix.length === 1 && matrix[0]?.length === 1
+  const startsAtSelection = selection && rowIndex === selection.rowStart && fieldIndex === selection.colStart
+  if (isSingleValue && startsAtSelection && (selection.rowStart !== selection.rowEnd || selection.colStart !== selection.colEnd)) {
+    const value = matrix[0][0].trim()
+    for (let targetRowIndex = selection.rowStart; targetRowIndex <= selection.rowEnd; targetRowIndex += 1) {
+      for (let targetFieldIndex = selection.colStart; targetFieldIndex <= selection.colEnd; targetFieldIndex += 1) {
+        updateTeachingBatchCellByIndex(targetRowIndex, targetFieldIndex, value)
+      }
+    }
+    teachingBatchRows.value = [...teachingBatchRows.value]
+    teachingBatchEditingCell.value = null
+    return
+  }
 
   matrix.forEach((rowValues, rowOffset) => {
     rowValues.forEach((cellValue, colOffset) => {
@@ -4753,10 +5228,18 @@ function pasteToTeachingBatchFrom(rowIndex: number, fieldIndex: number, event: C
     teachingBatchSelectionAnchor.value = { rowIndex, field: startField }
     teachingBatchSelectionFocus.value = { rowIndex: endRow, field: endField }
   }
+  teachingBatchRows.value = [...teachingBatchRows.value]
+  teachingBatchEditingCell.value = null
 }
 
 function handleTeachingBatchPaste(startRowIndex: number, startFieldIndex: number, event: ClipboardEvent): void {
   pasteToTeachingBatchFrom(startRowIndex, startFieldIndex, event)
+}
+
+function handleTeachingBatchGridPaste(event: ClipboardEvent): void {
+  const range = getTeachingBatchSelectionRange()
+  if (!range) return
+  pasteToTeachingBatchFrom(range.rowStart, range.colStart, event)
 }
 
 function clearSelectedTeachingBatchCells(): boolean {
@@ -4893,11 +5376,6 @@ async function submitTeachingBatchDialog(): Promise<void> {
     teacherMap.get(key)!.push(item)
   })
 
-  const existingWeeklyMap = new Map<string, number>()
-  teachingAssignments.value.forEach((item) => {
-    existingWeeklyMap.set(`${item.classId}::${item.teacherId}::${item.courseId}`, item.weeklyLessons || 1)
-  })
-
   const created: TeachingAssignmentRecord[] = []
   const headTeacherByClass = new Map<string, string>()
   let seed = 0
@@ -4920,7 +5398,7 @@ async function submitTeachingBatchDialog(): Promise<void> {
         const matched = teacherMap.get(teacherName) ?? []
         if (matched.length === 0) return
         const teacher = matched[0]
-        const weeklyKey = `${classId}::${teacher.id}::${course.id}`
+        const classInfo = classRecords.value.find((item) => item.id === classId)
         created.push({
           id: `ta-batch-${Date.now()}-${seed}`,
           campusId,
@@ -4928,7 +5406,7 @@ async function submitTeachingBatchDialog(): Promise<void> {
           classId,
           teacherId: teacher.id,
           courseId: course.id,
-          weeklyLessons: existingWeeklyMap.get(weeklyKey) ?? 1
+          weeklyLessons: getArrangementWeeklyLessons(classInfo, course.id)
         })
         seed += 1
       })
@@ -4996,6 +5474,14 @@ watch(
   }
 )
 
+watch(
+  teachingAssignmentPlannedWeeklyLessons,
+  (value) => {
+    teachingAssignmentForm.weeklyLessons = value
+  },
+  { immediate: true }
+)
+
 function submitTeachingAssignmentDialog(): void {
   if (
     !teachingAssignmentForm.campusId ||
@@ -5015,7 +5501,7 @@ function submitTeachingAssignmentDialog(): void {
     classId: teachingAssignmentForm.classId,
     teacherId: teachingAssignmentForm.teacherId,
     courseId: teachingAssignmentForm.courseId,
-    weeklyLessons: Math.max(0, Math.floor(teachingAssignmentForm.weeklyLessons || 0))
+    weeklyLessons: teachingAssignmentPlannedWeeklyLessons.value
   })
   markTeachingInfoDirty()
   notify.success('任课信息已新增，请点击“保存任课信息”。')
@@ -5047,7 +5533,9 @@ function resetClassHours(): void {
           morningStudy: 0,
           morningLessons: 0,
           afternoonLessons: 0,
-          eveningStudy: 0
+          eveningStudy: 0,
+          breakSlot: '',
+          fixedActivities: []
         }
       : item
   )
@@ -5062,7 +5550,9 @@ function resetClassHours(): void {
           morningStudy: 0,
           morningLessons: 0,
           afternoonLessons: 0,
-          eveningStudy: 0
+          eveningStudy: 0,
+          breakSlot: '',
+          fixedActivities: []
         }
       : item
   )
@@ -5072,26 +5562,19 @@ function applyBatchClassHours(): void {
   const campusId = selectedHoursCampusId.value
   if (!campusId) return
   if (!isClassHoursBatchFormReady()) {
-    notify.warning('请先完整设置批量课时后再应用。')
+    notify.warning('请至少设置一项批量课时后再应用。')
     return
   }
-  const weeklyDays = classHoursBatchForm.weeklyDays as number
-  const morningStudy = classHoursBatchForm.morningStudy as number
-  const morningLessons = classHoursBatchForm.morningLessons as number
-  const afternoonLessons = classHoursBatchForm.afternoonLessons as number
-  const eveningStudy = classHoursBatchForm.eveningStudy as number
-  const breakSlot = classHoursBatchForm.breakSlot ?? ''
+  const batch = classHoursBatchForm
 
   classHourRows.value = classHourRows.value.map((item) =>
     item.campusId === campusId && isGradeInEducationSystem(item.grade, selectedHoursEducationSystem.value)
       ? {
           ...item,
-          weeklyDays,
-          morningStudy,
-          morningLessons,
-          afternoonLessons,
-          eveningStudy,
-          breakSlot
+          ...(batch.weeklyDays !== null ? { weeklyDays: batch.weeklyDays } : {}),
+          ...(batch.morningLessons !== null ? { morningLessons: batch.morningLessons } : {}),
+          ...(batch.afternoonLessons !== null ? { afternoonLessons: batch.afternoonLessons } : {}),
+          ...(batch.fixedActivities !== null ? { fixedActivities: cloneFixedActivities(batch.fixedActivities) } : {})
         }
       : item
   )
@@ -5100,12 +5583,10 @@ function applyBatchClassHours(): void {
     item.campusId === campusId && isGradeInEducationSystem(item.grade, selectedHoursEducationSystem.value)
       ? {
           ...item,
-          weeklyDays,
-          morningStudy,
-          morningLessons,
-          afternoonLessons,
-          eveningStudy,
-          breakSlot
+          ...(batch.weeklyDays !== null ? { weeklyDays: batch.weeklyDays } : {}),
+          ...(batch.morningLessons !== null ? { morningLessons: batch.morningLessons } : {}),
+          ...(batch.afternoonLessons !== null ? { afternoonLessons: batch.afternoonLessons } : {}),
+          ...(batch.fixedActivities !== null ? { fixedActivities: cloneFixedActivities(batch.fixedActivities) } : {})
         }
       : item
   )
@@ -5132,6 +5613,13 @@ function confirmResetClassHoursDialog(): void {
 }
 
 async function saveClassHours(): Promise<void> {
+  const incomplete = currentClassHourRows.value.find(
+    (item) => item.weeklyDays <= 0 || item.morningLessons <= 0 || item.afternoonLessons <= 0
+  )
+  if (incomplete) {
+    notify.warning(`请先完整设置「${incomplete.grade}」的每周上课天数、上午课时和下午课时。`)
+    return
+  }
   rememberClassHoursBatchDraft()
   const gradeMap = new Map(
     classHourRows.value
@@ -5155,7 +5643,8 @@ async function saveClassHours(): Promise<void> {
       morningLessons: gradeRow.morningLessons,
       afternoonLessons: gradeRow.afternoonLessons,
       eveningStudy: gradeRow.eveningStudy,
-      breakSlot: gradeRow.breakSlot
+      breakSlot: gradeRow.breakSlot,
+      fixedActivities: cloneFixedActivities(gradeRow.fixedActivities)
     }
   })
 
@@ -5175,6 +5664,13 @@ function closeClassHoursByClassDialog(): void {
 }
 
 function saveClassHoursByClassDialog(): void {
+  const incomplete = classHoursByClassRows.value.find(
+    (item) => item.weeklyDays <= 0 || item.morningLessons <= 0 || item.afternoonLessons <= 0
+  )
+  if (incomplete) {
+    notify.warning(`请先完整设置「${incomplete.className}」的每周上课天数、上午课时和下午课时。`)
+    return
+  }
   const campusId = classHoursByClassCampusId.value
   const grade = classHoursByClassGrade.value
   classHourClassRows.value = [
@@ -5216,7 +5712,8 @@ function setByClass(row: ClassHourRow): void {
       morningLessons: row.morningLessons,
       afternoonLessons: row.afternoonLessons,
       eveningStudy: row.eveningStudy,
-      breakSlot: row.breakSlot
+      breakSlot: row.breakSlot,
+      fixedActivities: cloneFixedActivities(row.fixedActivities)
     }
   })
   classHoursByClassCampusId.value = row.campusId
@@ -5276,7 +5773,155 @@ function getArrangementTotalByValues(values: Record<string, number | null>): num
 }
 
 async function saveArrangementSettings(): Promise<void> {
-  await persistBasicData('课程安排已保存。')
+  persistCurrentArrangementScope()
+  const removedAssignments = synchronizeTeachingAssignmentsWithArrangement()
+  await persistBasicData(removedAssignments > 0 ? `课程安排已保存，已移除 ${removedAssignments} 条无课时任课信息。` : '课程安排已保存。')
+}
+
+function arrangementGradeClassRecords(campusId: string, grade: string): ClassRecord[] {
+  return classRecords.value
+    .filter((item) => item.campusId === campusId && item.grade === grade)
+    .sort((a, b) => a.classNo - b.classNo)
+}
+
+function arrangementGradesForCampus(campusId: string): string[] {
+  return Array.from(new Set(classRecords.value.filter((item) => item.campusId === campusId).map((item) => item.grade))).sort(
+    (a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999)
+  )
+}
+
+function arrangementSheetRows(campusId: string, grade: string, includeValues: boolean): string[][] {
+  const scopeKey = getArrangementScopeKey(campusId, grade)
+  const hiddenCourseIds = new Set(arrangementScopeStore.value[scopeKey]?.hiddenCourseIds ?? [])
+  const coursesOfGrade = arrangementCoursesForScope(campusId, grade).filter((course) => !hiddenCourseIds.has(course.id))
+  const sourceRows = scopeKey === arrangementScopeKey.value ? arrangementRows.value : arrangementScopeStore.value[scopeKey]?.rows ?? []
+  const valuesByClass = new Map(sourceRows.map((row) => [row.className, row.values] as const))
+  return [
+    ['班级', ...coursesOfGrade.map((course) => course.name)],
+    ...arrangementGradeClassRecords(campusId, grade).map((classItem) => [
+      classItem.className,
+      ...coursesOfGrade.map((course) => (includeValues ? String(valuesByClass.get(classItem.className)?.[course.id] ?? 0) : ''))
+    ])
+  ]
+}
+
+async function downloadArrangementTemplate(): Promise<void> {
+  const campusId = arrangementCampusId.value
+  const grades = arrangementGradesForCampus(campusId)
+  if (grades.length === 0) {
+    notify.warning('当前校区暂无班级，无法生成课程安排模板。')
+    return
+  }
+  const sheets = grades
+    .map((grade) => ({ name: grade, rows: arrangementSheetRows(campusId, grade, false) }))
+    .filter((sheet) => sheet.rows[0].length > 1)
+  if (sheets.length === 0) {
+    notify.warning('当前校区暂无可配置课程，请先在课程管理中配置课程。')
+    return
+  }
+  try {
+    await exportExcelWorkbook(`${getCampusDisplayName(campusId)}_课程安排导入模板.xlsx`, sheets)
+    notify.success('多年级课程安排模板已下载。')
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : '下载模板失败，请稍后重试。')
+  }
+}
+
+async function exportArrangementData(): Promise<void> {
+  const campusId = arrangementCampusId.value
+  const grades = arrangementGradesForCampus(campusId)
+  if (grades.length === 0) {
+    notify.warning('当前校区暂无班级，无法导出课程安排数据。')
+    return
+  }
+  persistCurrentArrangementScope()
+  const sheets = grades
+    .map((grade) => ({ name: grade, rows: arrangementSheetRows(campusId, grade, true) }))
+    .filter((sheet) => sheet.rows[0].length > 1)
+  try {
+    await exportExcelWorkbook(`${getCampusDisplayName(campusId)}_课程安排数据.xlsx`, sheets)
+    notify.success('多年级课程安排数据已导出。')
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : '导出数据失败，请稍后重试。')
+  }
+}
+
+function triggerArrangementImport(): void {
+  arrangementImportInput.value?.click()
+}
+
+async function handleArrangementImport(event: Event): Promise<void> {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  target.value = ''
+  if (!file) return
+
+  try {
+    const workbookSheets = await parseSpreadsheetWorkbook(file)
+    const campusId = arrangementCampusId.value
+    persistCurrentArrangementScope()
+    const nextScopes = { ...arrangementScopeStore.value }
+    let importedClassCount = 0
+    let skipped = 0
+
+    workbookSheets.forEach((sheet) => {
+      const grade = sheet.name
+      const classes = arrangementGradeClassRecords(campusId, grade)
+      const [header, ...dataRows] = sheet.rows
+      if (classes.length === 0 || !header || header[0]?.trim() !== '班级') return
+      const scopeCourses = arrangementCoursesForScope(campusId, grade)
+      const courseByName = new Map(scopeCourses.map((course) => [course.name.trim(), course] as const))
+      const courseColumns = header
+        .map((name, index) => ({ course: courseByName.get(name.trim()), index }))
+        .filter((item): item is { course: CourseItem; index: number } => Boolean(item.course))
+      if (courseColumns.length === 0) return
+
+      const importedValues = new Map<string, Map<string, number>>()
+      const classNames = new Set(classes.map((item) => item.className))
+      dataRows.forEach((row) => {
+        const className = String(row[0] || '').trim()
+        if (!classNames.has(className)) {
+          skipped += 1
+          return
+        }
+        const values = new Map<string, number>()
+        courseColumns.forEach(({ course, index }) => values.set(course.id, toNumericOrNull(String(row[index] ?? '')) ?? 0))
+        importedValues.set(className, values)
+      })
+      if (importedValues.size === 0) return
+
+      const scopeKey = getArrangementScopeKey(campusId, grade)
+      const previous = nextScopes[scopeKey]
+      const previousValues = new Map((previous?.rows ?? []).map((row) => [row.className, row.values] as const))
+      nextScopes[scopeKey] = {
+        rows: classes.map((classItem, index) => ({
+          id: `${classItem.className}-${index}`,
+          className: classItem.className,
+          grade,
+          values: Object.fromEntries(
+            scopeCourses.map((course) => [
+              course.id,
+              importedValues.get(classItem.className)?.get(course.id) ?? previousValues.get(classItem.className)?.[course.id] ?? 0
+            ])
+          )
+        })),
+        batchValues: Object.fromEntries(scopeCourses.map((course) => [course.id, previous?.batchValues?.[course.id] ?? 0])),
+        hiddenCourseIds: [...(previous?.hiddenCourseIds ?? [])]
+      }
+      importedClassCount += importedValues.size
+    })
+
+    if (importedClassCount === 0) {
+      notify.error('未匹配到可导入年级，请使用下载的多年级模板。')
+      return
+    }
+    arrangementScopeStore.value = nextScopes
+    applyArrangementScopeByKey(arrangementScopeKey.value)
+    const removedAssignments = synchronizeTeachingAssignmentsWithArrangement()
+    await persistBasicData(`已导入 ${importedClassCount} 个班级的课程安排${removedAssignments ? `，已移除 ${removedAssignments} 条无课时任课信息` : ''}${skipped ? `，跳过 ${skipped} 行未匹配数据` : ''}。`)
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : '课程安排上传失败，请检查模板格式。')
+  }
 }
 
 function resetArrangementSettings(): void {
@@ -5286,6 +5931,63 @@ function resetArrangementSettings(): void {
     values: Object.fromEntries(arrangementCourses.value.map((course) => [course.id, 0]))
   }))
   persistCurrentArrangementScope()
+}
+
+function openAddArrangementCourseDialog(): void {
+  selectedArrangementCourseIds.value = []
+  arrangementCourseAddDialogVisible.value = true
+}
+
+async function addArrangementCourses(): Promise<void> {
+  if (selectedArrangementCourseIds.value.length === 0) {
+    notify.warning('请至少选择一门要添加的学科。')
+    return
+  }
+  const scopeKey = arrangementScopeKey.value
+  const current = arrangementScopeStore.value[scopeKey]
+  const selectedIds = new Set(selectedArrangementCourseIds.value)
+  arrangementScopeStore.value = {
+    ...arrangementScopeStore.value,
+    [scopeKey]: {
+      rows: cloneArrangementRows(current?.rows ?? arrangementRows.value),
+      batchValues: cloneArrangementBatchValues(current?.batchValues ?? arrangementBatchValues.value),
+      hiddenCourseIds: (current?.hiddenCourseIds ?? []).filter((id) => !selectedIds.has(id))
+    }
+  }
+  arrangementCourseAddDialogVisible.value = false
+  applyArrangementScopeByKey(scopeKey)
+  await persistBasicData(`已添加 ${selectedIds.size} 门学科。`)
+}
+
+async function deleteZeroLessonArrangementCourses(): Promise<void> {
+  if (zeroArrangementCourses.value.length === 0) {
+    notify.warning('当前年级没有课时为 0 的学科。')
+    return
+  }
+  const courseNames = zeroArrangementCourses.value.map((course) => course.name).join('、')
+  try {
+    await ElMessageBox.confirm(`将从当前年级课程安排中移除：${courseNames}。可通过“添加学科”恢复。`, '删除零课时学科', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+
+  const scopeKey = arrangementScopeKey.value
+  const current = arrangementScopeStore.value[scopeKey]
+  const hiddenIds = new Set([...(current?.hiddenCourseIds ?? []), ...zeroArrangementCourses.value.map((course) => course.id)])
+  arrangementScopeStore.value = {
+    ...arrangementScopeStore.value,
+    [scopeKey]: {
+      rows: cloneArrangementRows(current?.rows ?? arrangementRows.value),
+      batchValues: cloneArrangementBatchValues(current?.batchValues ?? arrangementBatchValues.value),
+      hiddenCourseIds: [...hiddenIds]
+    }
+  }
+  applyArrangementScopeByKey(scopeKey)
+  await persistBasicData('零课时学科已从当前年级课程安排中移除。')
 }
 
 function openResetArrangementDialog(): void {
@@ -5373,11 +6075,12 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
         <h1>{{ activeTitle }}</h1>
         <div class="base-main-head-actions">
           <el-button v-if="activeMenu === 'campus'" type="primary" @click="createCampus">新增校区</el-button>
-          <el-button v-if="activeMenu === 'semester'" type="primary" @click="exportSemesterConfig">导出</el-button>
+          <el-button v-if="activeMenu === 'semester'" type="primary" @click="exportSemesterConfig">导出学期</el-button>
+          <el-button v-if="activeMenu === 'lesson-cycle'" type="primary" plain @click="openTermImportDialog">导入其他学期基础数据</el-button>
           <el-button v-if="activeMenu === 'course-manage'" type="primary" @click="createCourse">新增课程</el-button>
           <template v-if="activeMenu === 'teaching-info'">
             <el-button type="primary" plain @click="openTeachingAssignmentDialog">新增任课</el-button>
-            <el-button type="primary" :disabled="!teachingInfoDirty" @click="saveTeachingInfo">保存任课信息</el-button>
+            <el-button type="primary" :disabled="!teachingInfoDirty" @click="saveTeachingInfo">保存任课</el-button>
           </template>
         </div>
       </header>
@@ -5544,51 +6247,61 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
       <template v-else-if="activeMenu === 'class-setting'">
         <section class="class-setting-panel">
           <div class="class-setting-toolbar">
+            <div class="class-setting-toolbar-head">
+              <div>
+                <h3>生成班级</h3>
+                <p>先设置校区、学段、班级参数，再勾选需要处理的年级后批量生成。</p>
+              </div>
+            </div>
             <el-form label-position="top" class="class-setting-form-inline">
-              <el-form-item label="校区">
-                <el-select v-model="classSettingForm.campusId" placeholder="请选择校区">
-                  <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
-                </el-select>
-              </el-form-item>
+              <div class="class-setting-config-row">
+                <el-form-item label="校区">
+                  <el-select v-model="classSettingForm.campusId" placeholder="请选择校区">
+                    <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
+                  </el-select>
+                </el-form-item>
 
-              <el-form-item label="学段">
-                <el-select v-model="classSettingForm.stage" placeholder="请选择学段">
-                  <el-option v-for="stage in stageOptions" :key="stage" :label="stage" :value="stage" />
-                </el-select>
-              </el-form-item>
+                <el-form-item label="学段">
+                  <el-select v-model="classSettingForm.stage" placeholder="请选择学段">
+                    <el-option v-for="stage in stageOptions" :key="stage" :label="stage" :value="stage" />
+                  </el-select>
+                </el-form-item>
 
-              <el-form-item label="班级数">
-                <el-input-number v-model="classSettingForm.batchCount" :min="1" controls-position="right" />
-              </el-form-item>
+                <el-form-item label="班级数">
+                  <el-input-number v-model="classSettingForm.batchCount" :min="1" controls-position="right" />
+                </el-form-item>
 
-              <el-form-item label="起始班号">
-                <el-input-number v-model="classSettingForm.startNo" :min="1" controls-position="right" />
-              </el-form-item>
+                <el-form-item label="起始班号">
+                  <el-input-number v-model="classSettingForm.startNo" :min="1" controls-position="right" />
+                </el-form-item>
+              </div>
+
+              <div class="grade-select class-setting-grade-section">
+                <p>选择需要生成的年级</p>
+                <div class="grade-check-row">
+                  <div class="grade-check-row-main">
+                    <el-checkbox
+                      class="grade-select-all"
+                      :model-value="isAllGradesChecked"
+                      :indeterminate="isGradePartiallyChecked"
+                      @change="toggleAllGrades($event as boolean)"
+                    >
+                      全选
+                    </el-checkbox>
+                    <el-checkbox-group v-model="classSettingForm.grades" class="grade-checks">
+                      <el-checkbox v-for="grade in gradeOptions" :key="grade" :label="grade">{{ grade }}</el-checkbox>
+                    </el-checkbox-group>
+                  </div>
+                  <el-button type="primary" :disabled="classSettingForm.grades.length === 0" @click="batchCreateClasses">
+                    批量生成班级
+                  </el-button>
+                </div>
+              </div>
 
               <el-form-item class="class-setting-generate-item">
-                <el-button type="primary" @click="batchCreateClasses">批量生成班级</el-button>
-                <el-button type="danger" plain :disabled="selectedClassCount === 0" @click="removeClassesBatch">
-                  批量删除（{{ selectedClassCount }}）
-                </el-button>
+                <span class="class-setting-generate-tip">生成后会自动跳过已存在的班级。</span>
               </el-form-item>
             </el-form>
-          </div>
-
-          <div class="grade-select">
-            <p>年级</p>
-            <div class="grade-check-row">
-              <el-checkbox
-                class="grade-select-all"
-                :model-value="isAllGradesChecked"
-                :indeterminate="isGradePartiallyChecked"
-                @change="toggleAllGrades($event as boolean)"
-              >
-                全选
-              </el-checkbox>
-              <el-checkbox-group v-model="classSettingForm.grades" class="grade-checks">
-                <el-checkbox v-for="grade in gradeOptions" :key="grade" :label="grade">{{ grade }}</el-checkbox>
-              </el-checkbox-group>
-            </div>
           </div>
 
           <div class="class-grade-stats">
@@ -5601,21 +6314,35 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             </div>
           </div>
 
+          <div class="class-table-toolbar">
+            <el-select v-model="classTableCampusId" class="class-table-filter-select" placeholder="筛选校区">
+              <el-option label="全部校区" value="__all__" />
+              <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
+            </el-select>
+            <el-select v-model="classTableGradeFilter" multiple collapse-tags collapse-tags-tooltip clearable placeholder="筛选年级" class="class-table-filter-select">
+              <el-option v-for="item in classTableGradeFilterOptions" :key="item.value" :label="item.text" :value="item.value" />
+            </el-select>
+            <span class="teaching-info-actions-spacer" />
+            <el-button type="danger" plain :disabled="selectedClassCount === 0" @click="removeClassesBatch">
+              批量删除（{{ selectedClassCount }}）
+            </el-button>
+          </div>
+
           <el-table
             ref="classTableRef"
-            :data="currentClassRecords"
+            :data="pagedClassTableView"
             row-key="id"
             border
             @selection-change="onClassSelectionChange"
           >
             <el-table-column type="selection" width="46" />
             <el-table-column label="校区" min-width="140">
-              <template #default="{ row }">{{ campuses.find((c) => c.id === row.campusId)?.name }}</template>
+              <template #default="{ row }">{{ getCampusDisplayName(row.campusId) }}</template>
             </el-table-column>
             <el-table-column prop="stage" label="学段" min-width="100" />
             <el-table-column prop="grade" label="年级" min-width="120" />
             <el-table-column prop="classNo" label="班号" min-width="90" />
-            <el-table-column prop="className" label="班级名称" min-width="140" />
+            <el-table-column prop="className" label="班级" min-width="120" />
             <el-table-column label="操作" min-width="120">
               <template #default="{ row }">
                 <el-button type="primary" link @click="renameClass(row)">编辑</el-button>
@@ -5626,6 +6353,16 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <div>暂无班级，请先批量生成。</div>
             </template>
           </el-table>
+
+          <div class="teacher-pagination">
+            <el-pagination
+              v-model:current-page="classPage"
+              v-model:page-size="classPageSize"
+              :page-sizes="classPageSizeOptions"
+              layout="total, sizes, prev, pager, next, jumper"
+              :total="classTableView.length"
+            />
+          </div>
 
           <p class="class-setting-tip">
             当前配置：{{ campuses.find((c) => c.id === classSettingForm.campusId)?.name }} / {{ classSettingForm.stage }} /
@@ -5739,7 +6476,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
         <section class="teacher-entry-panel">
           <div class="teacher-entry-actions">
             <span class="teaching-info-actions-spacer" />
-            <el-button type="primary" @click="createRoomType">新增</el-button>
+            <el-button type="primary" @click="createRoomType">新增教室类型</el-button>
           </div>
 
           <el-table :data="roomTypes" border>
@@ -5767,7 +6504,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             <el-input
               v-model="teacherSearchKeyword"
               clearable
-              placeholder="搜索教师ID/姓名/学科/教研与活动分组/校区"
+              placeholder="搜索姓名/学科/教研与活动分组/校区"
               style="width: 300px"
             />
             <el-button type="primary" @click="openCreateTeacherDialog">新增教师</el-button>
@@ -5776,7 +6513,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             </el-button>
             <el-button @click="downloadTeacherTemplate">下载模板</el-button>
             <el-button @click="triggerTeacherImport">上传 Excel</el-button>
-            <el-button type="primary" @click="exportTeacherData">导出数据</el-button>
+            <el-button type="primary" @click="exportTeacherData">导出教师</el-button>
             <input
               ref="teacherImportInput"
               type="file"
@@ -5796,7 +6533,6 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             @selection-change="onTeacherSelectionChange"
           >
             <el-table-column type="selection" width="46" reserve-selection />
-            <el-table-column prop="id" label="教师ID" min-width="130" />
             <el-table-column prop="name" label="姓名" min-width="120" />
             <el-table-column prop="subject" label="学科" min-width="120" />
             <el-table-column prop="subjectGroup" label="教研与活动分组" min-width="140" />
@@ -5872,9 +6608,9 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             <span class="teaching-info-actions-spacer" />
             <el-button plain @click="downloadRoomTemplate">下载模板</el-button>
             <el-button plain @click="triggerRoomImport">上传 Excel</el-button>
-            <el-button type="info" @click="exportRoomData">导出数据</el-button>
-            <el-button type="primary" @click="openCreateRoomDialog">新增</el-button>
-            <el-button type="success" @click="saveRoomEntryData">保存</el-button>
+            <el-button type="info" @click="exportRoomData">导出教室</el-button>
+            <el-button type="primary" @click="openCreateRoomDialog">新增教室</el-button>
+            <el-button type="success" @click="saveRoomEntryData">保存教室</el-button>
             <el-button type="danger" plain :disabled="selectedRoomCount === 0" @click="removeRoomsBatch">
               批量删除（{{ selectedRoomCount }}）
             </el-button>
@@ -6049,24 +6785,37 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option v-for="item in studentClassOptions" :key="item.id" :label="item.className" :value="item.id" />
             </el-select>
             <span class="teaching-info-actions-spacer" />
+            <el-button type="danger" plain :disabled="selectedStudentCount === 0" @click="removeStudentsBatch">
+              批量删除（{{ selectedStudentCount }}）
+            </el-button>
             <el-button @click="downloadStudentTemplate">下载模板</el-button>
-            <el-button @click="triggerStudentImport">上传 Excel（Mock）</el-button>
-            <el-button type="primary" @click="exportStudentData">导出数据</el-button>
-            <el-button @click="generateVirtualStudentsPerClass(50)">生成每班50名虚拟学生</el-button>
-            <el-button @click="clearVirtualStudents">清除虚拟学生</el-button>
+            <el-button @click="triggerStudentImport">导入学生</el-button>
+            <el-button type="primary" @click="exportStudentData">导出学生</el-button>
             <el-button type="primary" plain @click="openCreateStudentDialog">新增学生</el-button>
             <input
               ref="studentImportInput"
               type="file"
-              accept=".csv,.txt,.xlsx,.xls"
+              accept=".xlsx,.xls"
               class="hidden-input"
               @change="handleStudentImport"
             />
           </div>
-          <p class="dialog-tip">当前为 Mock 流程：建议使用 CSV 模板上传，后续可替换为真实 Excel 解析。</p>
+          <p class="dialog-tip">支持按模板导入学生数据，请使用 Excel 文件。</p>
           <p v-if="studentImportError" class="error">{{ studentImportError }}</p>
 
-          <el-table :data="pagedStudentRecordView" border>
+          <el-table
+            ref="studentTableRef"
+            :data="pagedStudentRecordView"
+            row-key="id"
+            border
+            @selection-change="onStudentSelectionChange"
+          >
+            <el-table-column type="selection" width="46" reserve-selection />
+            <el-table-column label="序号" width="76" align="center">
+              <template #default="{ $index }">
+                {{ (studentPage - 1) * studentPageSize + $index + 1 }}
+              </template>
+            </el-table-column>
             <el-table-column label="学生ID" min-width="140" class-name="student-id-cell">
               <template #default="{ row }">
                 <span class="student-id-text">{{ row.id }}</span>
@@ -6175,8 +6924,8 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-select v-model="teachingInfoCampusId" placeholder="选择校区" class="arrangement-filter-select">
                 <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
               </el-select>
-              <span>教学周期：</span>
-              <el-select v-model="teachingInfoCycleId" placeholder="选择教学周期" class="arrangement-filter-select">
+              <span>当前教学周期：</span>
+              <el-select v-model="teachingInfoCycleId" placeholder="当前教学周期" class="arrangement-filter-select">
                 <el-option v-for="item in teachingInfoCycleOptions" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
             </div>
@@ -6199,7 +6948,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 <tr>
                   <th class="sticky-col">班级</th>
                   <th>班主任</th>
-                  <th v-for="course in teachingInfoMatrixCourses" :key="course.id">{{ course.name }}</th>
+                  <th v-for="course in teachingInfoMatrixCourses" :key="course.id" :title="course.name">{{ teachingInfoCourseLabel(course) }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -6220,16 +6969,17 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                     v-for="course in teachingInfoMatrixCourses"
                     :key="`${classRow.id}-${course.id}`"
                     class="teaching-info-editable-cell"
-                    @click="editTeachingInfoCell(classRow, course)"
+                    :class="{ 'is-not-arranged': !isTeachingInfoCourseArranged(classRow, course.id) }"
+                    @click="isTeachingInfoCourseArranged(classRow, course.id) && editTeachingInfoCell(classRow, course)"
                   >
                     <span
                       class="teaching-info-cell-text"
                       :class="{
-                        'is-empty': !hasTeachingInfoCellTeachers(classRow.id, course.id),
-                        'is-filled': hasTeachingInfoCellTeachers(classRow.id, course.id)
+                        'is-empty': isTeachingInfoCourseArranged(classRow, course.id) && !hasTeachingInfoCellTeachers(classRow.id, course.id),
+                        'is-filled': isTeachingInfoCourseArranged(classRow, course.id) && hasTeachingInfoCellTeachers(classRow.id, course.id)
                       }"
                     >
-                      {{ getTeachingInfoCellText(classRow.id, course.id) }}
+                      {{ isTeachingInfoCourseArranged(classRow, course.id) ? getTeachingInfoCellText(classRow.id, course.id) : '--' }}
                     </span>
                   </td>
                 </tr>
@@ -6284,8 +7034,8 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                     />
                   </el-select>
                 </el-form-item>
-                <el-form-item label="周课时">
-                  <el-input-number v-model="teachingAssignmentForm.weeklyLessons" :min="0" />
+                <el-form-item label="周课时（根据课程安排）">
+                  <el-input-number v-model="teachingAssignmentForm.weeklyLessons" :min="0" disabled />
                 </el-form-item>
               </div>
             </el-form>
@@ -6305,7 +7055,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             class="teaching-batch-dialog"
           >
             <div class="dialog-tip">
-              操作说明：双击单元格可编辑教师姓名，多个教师用逗号分隔；支持 Excel 复制粘贴与框选区域删除。
+              操作说明：双击单元格可编辑教师姓名，拖拽或 Shift+单击可框选多格；支持 Excel 多行多列复制粘贴与框选区域删除。
             </div>
             <div class="teaching-batch-header">
               <p class="teaching-batch-range">{{ teachingBatchCampusName }} - {{ teachingBatchStage ?? '--' }} - {{ teachingBatchGrade }}</p>
@@ -6316,7 +7066,12 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               </div>
             </div>
 
-            <div class="arrangement-table-wrap teaching-batch-grid-wrap">
+            <div
+              ref="teachingBatchGridRef"
+              class="arrangement-table-wrap teaching-batch-grid-wrap"
+              tabindex="0"
+              @paste="handleTeachingBatchGridPaste"
+            >
               <table class="arrangement-table teaching-batch-table">
                 <thead>
                   <tr>
@@ -6336,6 +7091,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                       }"
                       @mousedown="handleTeachingBatchCellMousedown({ rowIndex, fieldIndex, event: $event as MouseEvent })"
                       @mouseenter="handleTeachingBatchCellMouseenter({ rowIndex, fieldIndex })"
+                      @mousemove="handleTeachingBatchCellMouseenter({ rowIndex, fieldIndex })"
                       @click="handleTeachingBatchCellClick({ rowIndex, fieldIndex })"
                     >
                       <input
@@ -6379,39 +7135,96 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
 
       <template v-else-if="activeMenu === 'lesson-cycle'">
         <section class="lesson-cycle-panel">
-          <div class="lesson-cycle-toolbar">
-            <el-select v-model="selectedTerm" class="lesson-cycle-term-select" placeholder="选择学期">
-              <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
-            </el-select>
+          <div class="lesson-cycle-setting-card">
+            <div class="lesson-cycle-setting-copy">
+              <h2>设置当前教学周期</h2>
+              <p>当前教学周期会用于任课信息、班级课时和后续排课。切换后自动保存并立即生效。</p>
+            </div>
+            <label class="lesson-cycle-setting-field">
+              <span>当前学期</span>
+              <el-select
+                v-model="selectedTerm"
+                class="lesson-cycle-term-select"
+                placeholder="选择当前学期"
+                @change="setCurrentTeachingTerm"
+              >
+                <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
+              </el-select>
+            </label>
           </div>
 
-          <el-table :data="teachingCycles" border>
-            <el-table-column prop="orderNo" label="序号" width="90" align="center" header-align="center" />
-            <el-table-column prop="cycleName" label="周期名称" min-width="140" align="center" header-align="center" />
-            <el-table-column prop="weekRange" label="起止周次" min-width="120" align="center" header-align="center" />
-            <el-table-column prop="dateRange" label="起止日期" min-width="180" align="center" header-align="center" />
-          </el-table>
+          <div v-if="selectedTermOption && teachingCycles[0]" class="lesson-cycle-current-card">
+            <div class="lesson-cycle-current-head">
+              <span>当前生效</span>
+              <strong>{{ selectedTermOption.label }}</strong>
+            </div>
+            <div class="lesson-cycle-current-data">
+              <div>
+                <span>教学周次</span>
+                <strong>{{ teachingCycles[0].cycleName }}</strong>
+              </div>
+              <div>
+                <span>起止日期</span>
+                <strong>{{ teachingCycles[0].dateRange }}</strong>
+              </div>
+            </div>
+          </div>
+
+          <el-dialog v-model="termImportDialogVisible" title="导入其他学期基础数据" width="520px">
+            <el-form label-position="top">
+              <el-form-item label="来源学期" required>
+                <el-select v-model="termImportForm.sourceTerm" placeholder="选择要导入的学期" style="width: 100%">
+                  <el-option v-for="term in importableTermOptions" :key="term.value" :label="term.label" :value="term.value" />
+                </el-select>
+              </el-form-item>
+              <el-checkbox v-model="termImportForm.promoteGrades">导入时升年级</el-checkbox>
+            </el-form>
+            <p class="dialog-tip">
+              勾选后，班级、学生和班级课时将按校区学段学制顺延一个年级；小学六年级、初中九年级和九年一贯制九年级不会带入。课程安排不会复制，需要在新学期重新安排。
+            </p>
+            <template #footer>
+              <div class="dialog-actions">
+                <el-button @click="termImportDialogVisible = false">取消</el-button>
+                <el-button type="primary" :disabled="!termImportForm.sourceTerm" @click="importTermData">确认导入</el-button>
+              </div>
+            </template>
+          </el-dialog>
         </section>
       </template>
 
       <template v-else-if="activeMenu === 'course-manage'">
         <section class="course-panel">
-          <div class="teacher-entry-actions">
-            <el-select v-model="courseCampusId" class="arrangement-filter-select" placeholder="选择校区">
-              <el-option label="全部校区" value="__all__" />
-              <el-option v-for="item in courseCampusOptions" :key="item.id" :label="item.name" :value="item.id" />
-            </el-select>
-            <el-select v-model="courseTab" class="arrangement-filter-select" placeholder="选择应用范围">
-              <el-option v-for="tab in courseTabs" :key="tab" :label="tab" :value="tab" />
-            </el-select>
-            <el-input v-model="courseKeyword" clearable placeholder="搜索课程名称/简称/学科/校区" style="width: 260px" />
-            <el-button @click="downloadCourseTemplate">下载模板</el-button>
-            <el-button @click="triggerCourseImport">上传 Excel</el-button>
-            <el-button type="primary" @click="exportCourseData">导出学科</el-button>
-            <el-button type="success" @click="saveCourseData">保存</el-button>
-            <el-button type="danger" plain :disabled="selectedCourseCount === 0" @click="removeCoursesBatch">
-              批量删除（{{ selectedCourseCount }}）
-            </el-button>
+          <div class="course-toolbar">
+            <div class="course-toolbar-row course-toolbar-row--filters">
+              <div class="course-toolbar-group course-toolbar-group--filters">
+                <span class="course-toolbar-label">筛选</span>
+                <el-select v-model="courseCampusId" class="arrangement-filter-select" placeholder="选择校区">
+                  <el-option label="全部校区" value="__all__" />
+                  <el-option v-for="item in courseCampusOptions" :key="item.id" :label="item.name" :value="item.id" />
+                </el-select>
+                <el-select v-model="courseTab" class="arrangement-filter-select" placeholder="选择应用范围">
+                  <el-option v-for="tab in courseTabs" :key="tab" :label="tab" :value="tab" />
+                </el-select>
+                <el-input v-model="courseKeyword" clearable placeholder="搜索课程名称/简称/学科/校区" class="course-toolbar-search" />
+              </div>
+            </div>
+
+            <div class="course-toolbar-row course-toolbar-row--actions">
+              <div class="course-toolbar-group">
+                <span class="course-toolbar-label">导入导出</span>
+                <el-button @click="downloadCourseTemplate">下载模板</el-button>
+                <el-button @click="triggerCourseImport">上传 Excel</el-button>
+                <el-button type="primary" @click="exportCourseData">导出课程</el-button>
+              </div>
+
+              <div class="course-toolbar-group course-toolbar-group--danger">
+                <span class="course-toolbar-label">危险操作</span>
+                <el-button type="danger" plain :disabled="selectedCourseCount === 0" @click="removeCoursesBatch">
+                  批量删除（{{ selectedCourseCount }}）
+                </el-button>
+              </div>
+            </div>
+
             <input
               ref="courseImportInput"
               type="file"
@@ -6420,7 +7233,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               @change="handleCourseImport"
             />
           </div>
-          <p class="dialog-tip">支持上传 Excel/CSV，按模板列顺序导入课程。</p>
+          <p class="dialog-tip">支持上传 Excel/CSV，按模板列顺序导入课程；新增、编辑、删除、导入后会自动保存。</p>
           <p v-if="courseImportError" class="error">{{ courseImportError }}</p>
 
           <el-table
@@ -6431,9 +7244,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             @selection-change="onCourseSelectionChange"
           >
             <el-table-column type="selection" width="46" />
-            <el-table-column label="序号" width="80" align="center" header-align="center">
-              <template #default="{ row }">{{ filteredCourseIndexMap[row.id] ?? '-' }}</template>
-            </el-table-column>
+            <el-table-column prop="orderNo" label="序号" width="90" align="center" header-align="center" />
             <el-table-column prop="name" label="课程名称" min-width="140" />
             <el-table-column prop="shortName" label="课程简称" min-width="120" />
             <el-table-column prop="subject" label="所属学科" min-width="120" />
@@ -6456,17 +7267,25 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
           <el-dialog
             v-model="courseDialogVisible"
             :title="courseDialogMode === 'create' ? '新增课程' : '编辑课程'"
-            width="620px"
+            width="760px"
             destroy-on-close
           >
-            <el-form label-position="top">
-              <el-form-item label="课程名称" required>
+            <el-form label-position="top" class="course-dialog-form">
+              <el-form-item label="序号" class="course-dialog-form__item course-dialog-form__item--compact">
+                <el-input
+                  v-model="courseForm.orderNo"
+                  placeholder="留空则自动递增"
+                  inputmode="numeric"
+                  clearable
+                />
+              </el-form-item>
+              <el-form-item label="课程名称" required class="course-dialog-form__item">
                 <el-input v-model="courseForm.name" placeholder="请输入课程名称（如：语文）" clearable />
               </el-form-item>
-              <el-form-item label="课程简称">
+              <el-form-item label="课程简称" class="course-dialog-form__item">
                 <el-input v-model="courseForm.shortName" placeholder="可选，例如：语" clearable />
               </el-form-item>
-              <el-form-item label="所属学科">
+              <el-form-item label="所属学科" class="course-dialog-form__item">
                 <el-select
                   v-model="courseForm.subject"
                   filterable
@@ -6478,12 +7297,12 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                   <el-option v-for="subject in courseSubjectOptions" :key="subject" :label="subject" :value="subject" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="应用范围" required>
+              <el-form-item label="应用范围" required class="course-dialog-form__item">
                 <el-select v-model="courseForm.scope" placeholder="请选择应用范围">
                   <el-option v-for="scope in enabledCourseScopes" :key="scope" :label="scope" :value="scope" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="所属校区">
+              <el-form-item label="所属校区" class="course-dialog-form__item">
                 <el-select v-model="courseForm.campusId" clearable placeholder="不选则为全部校区">
                   <el-option v-for="item in campuses" :key="item.id" :label="item.name" :value="item.id" />
                 </el-select>
@@ -6507,51 +7326,29 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
             </el-select>
 
-            <div class="class-hours-campus">
-              <label for="hours-campus">选择校区：</label>
-              <el-select id="hours-campus" v-model="selectedHoursCampusId" class="class-hours-campus-select" placeholder="选择校区">
-                <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
-              </el-select>
-            </div>
-
-            <div class="class-hours-campus">
-              <label for="hours-system">学制：</label>
-              <el-select
-                id="hours-system"
-                v-model="selectedHoursEducationSystem"
-                class="class-hours-system-select"
-                placeholder="选择学制"
-              >
-                <el-option v-for="item in EDUCATION_SYSTEM_OPTIONS" :key="`hours-system-${item}`" :label="item" :value="item" />
-              </el-select>
+            <div class="class-hours-context">
+              <span>当前校区：{{ currentHoursCampus?.name ?? '未设置' }}</span>
+              <span>学段学制：{{ currentHoursCampus?.educationSystem ?? '未设置' }}</span>
             </div>
           </div>
 
           <div class="class-hours-batch">
             <div class="class-hours-batch-head">
               <span class="class-hours-batch-title">批量设置所有年级</span>
-              <el-button type="primary" link @click="applyBatchClassHours">应用到所有年级</el-button>
+              <div class="class-hours-batch-actions">
+                <el-button link @click="openFixedActivitiesDialog('batch', '固定活动字段')">新增固定字段</el-button>
+                <el-button type="primary" link @click="applyBatchClassHours">应用到所有年级</el-button>
+              </div>
             </div>
             <div class="class-hours-batch-grid">
               <div class="class-hours-batch-item">
-                <label>每周上课天数</label>
+                <label>每周上课天数 <em>*</em></label>
                 <el-select v-model="classHoursBatchForm.weeklyDays" clearable placeholder="未设置" class="class-hours-cell-select">
                   <el-option v-for="item in hourDayOptions" :key="`batch-weekly-${item}`" :label="String(item)" :value="item" />
                 </el-select>
               </div>
               <div class="class-hours-batch-item">
-                <label>早自习课时</label>
-                <el-select
-                  v-model="classHoursBatchForm.morningStudy"
-                  clearable
-                  placeholder="未设置"
-                  class="class-hours-cell-select"
-                >
-                  <el-option v-for="item in hourCountOptions" :key="`batch-ms-${item}`" :label="String(item)" :value="item" />
-                </el-select>
-              </div>
-              <div class="class-hours-batch-item">
-                <label>上午课时</label>
+                <label>上午课时 <em>*</em></label>
                 <el-select
                   v-model="classHoursBatchForm.morningLessons"
                   clearable
@@ -6562,7 +7359,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 </el-select>
               </div>
               <div class="class-hours-batch-item">
-                <label>下午课时</label>
+                <label>下午课时 <em>*</em></label>
                 <el-select
                   v-model="classHoursBatchForm.afternoonLessons"
                   clearable
@@ -6572,26 +7369,16 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                   <el-option v-for="item in hourCountOptions" :key="`batch-al-${item}`" :label="String(item)" :value="item" />
                 </el-select>
               </div>
-              <div class="class-hours-batch-item">
-                <label>晚自习课时</label>
+              <div v-for="name in customFixedActivityNames" :key="`batch-fixed-${name}`" class="class-hours-batch-item">
+                <label>{{ name }}（可选）</label>
                 <el-select
-                  v-model="classHoursBatchForm.eveningStudy"
+                  :model-value="getFixedActivityPlacementValue(classHoursBatchForm.fixedActivities, name)"
                   clearable
-                  placeholder="未设置"
+                  placeholder="不插入"
                   class="class-hours-cell-select"
+                  @update:model-value="setFixedActivityPlacement(classHoursBatchForm, name, String($event || ''))"
                 >
-                  <el-option v-for="item in hourCountOptions" :key="`batch-es-${item}`" :label="String(item)" :value="item" />
-                </el-select>
-              </div>
-              <div class="class-hours-batch-item">
-                <label>课间操时间（可选）</label>
-                <el-select v-model="classHoursBatchForm.breakSlot" clearable placeholder="未设置" class="class-hours-cell-select">
-                  <el-option
-                    v-for="item in breakSlotOptions"
-                    :key="`batch-break-${item || 'none'}`"
-                    :label="item || '不设置'"
-                    :value="item"
-                  />
+                  <el-option v-for="item in fixedActivityPlacementOptions" :key="`batch-${name}-${item.value}`" :label="item.label" :value="item.value" />
                 </el-select>
               </div>
             </div>
@@ -6599,54 +7386,41 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
 
           <el-table :data="currentClassHourRows" border>
             <el-table-column prop="grade" label="年级" min-width="110" />
-            <el-table-column label="每周上课天数" min-width="130">
+            <el-table-column label="每周上课天数 *" min-width="130">
               <template #default="{ row }">
                 <el-select v-model.number="row.weeklyDays" class="class-hours-cell-select">
                   <el-option v-for="item in hourDayOptions" :key="item" :label="String(item)" :value="item" />
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="早自习课时" min-width="120">
-              <template #default="{ row }">
-                <el-select v-model.number="row.morningStudy" class="class-hours-cell-select">
-                  <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column label="上午课时" min-width="110">
+            <el-table-column label="上午课时 *" min-width="110">
               <template #default="{ row }">
                 <el-select v-model.number="row.morningLessons" class="class-hours-cell-select">
                   <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="下午课时" min-width="110">
+            <el-table-column label="下午课时 *" min-width="110">
               <template #default="{ row }">
                 <el-select v-model.number="row.afternoonLessons" class="class-hours-cell-select">
                   <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="晚自习课时" min-width="120">
+            <el-table-column v-for="name in customFixedActivityNames" :key="`grade-fixed-${name}`" :label="name" min-width="140">
               <template #default="{ row }">
-                <el-select v-model.number="row.eveningStudy" class="class-hours-cell-select">
-                  <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
+                <el-select
+                  :model-value="getFixedActivityPlacementValue(row.fixedActivities, name)"
+                  clearable
+                  placeholder="不插入"
+                  class="class-hours-cell-select"
+                  @update:model-value="setFixedActivityPlacement(row, name, String($event || ''))"
+                >
+                  <el-option v-for="item in fixedActivityPlacementOptions" :key="`${row.id}-${name}-${item.value}`" :label="item.label" :value="item.value" />
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="课间操时间（可选）" min-width="140">
-              <template #default="{ row }">
-                <el-select v-model="row.breakSlot" class="class-hours-cell-select">
-                  <el-option
-                    v-for="item in breakSlotOptions"
-                    :key="`row-break-${item || 'none'}`"
-                    :label="item || '不设置'"
-                    :value="item"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column label="单班总课时" min-width="110" align="center" header-align="center">
+            <el-table-column label="智能排课总课时" min-width="120" align="center" header-align="center">
               <template #default="{ row }">{{ getClassHourTotalLessons(row) }}</template>
             </el-table-column>
             <el-table-column label="操作" min-width="110">
@@ -6664,54 +7438,41 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
           <el-dialog v-model="classHoursByClassVisible" :title="`${classHoursByClassGrade} 按班课时设置`" width="980px">
             <el-table :data="classHoursByClassRows" border>
               <el-table-column prop="className" label="班级" min-width="120" />
-              <el-table-column label="每周上课天数" min-width="130">
+              <el-table-column label="每周上课天数 *" min-width="130">
                 <template #default="{ row }">
                   <el-select v-model.number="row.weeklyDays" class="class-hours-cell-select">
                     <el-option v-for="item in hourDayOptions" :key="item" :label="String(item)" :value="item" />
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="早自习课时" min-width="120">
-                <template #default="{ row }">
-                  <el-select v-model.number="row.morningStudy" class="class-hours-cell-select">
-                    <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
-                  </el-select>
-                </template>
-              </el-table-column>
-              <el-table-column label="上午课时" min-width="110">
+              <el-table-column label="上午课时 *" min-width="110">
                 <template #default="{ row }">
                   <el-select v-model.number="row.morningLessons" class="class-hours-cell-select">
                     <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="下午课时" min-width="110">
+              <el-table-column label="下午课时 *" min-width="110">
                 <template #default="{ row }">
                   <el-select v-model.number="row.afternoonLessons" class="class-hours-cell-select">
                     <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="晚自习课时" min-width="120">
+              <el-table-column v-for="name in customFixedActivityNames" :key="`class-fixed-${name}`" :label="name" min-width="140">
                 <template #default="{ row }">
-                  <el-select v-model.number="row.eveningStudy" class="class-hours-cell-select">
-                    <el-option v-for="item in hourCountOptions" :key="item" :label="String(item)" :value="item" />
+                  <el-select
+                    :model-value="getFixedActivityPlacementValue(row.fixedActivities, name)"
+                    clearable
+                    placeholder="不插入"
+                    class="class-hours-cell-select"
+                    @update:model-value="setFixedActivityPlacement(row, name, String($event || ''))"
+                  >
+                    <el-option v-for="item in fixedActivityPlacementOptions" :key="`${row.id}-${name}-${item.value}`" :label="item.label" :value="item.value" />
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="课间操时间（可选）" min-width="150">
-                <template #default="{ row }">
-                  <el-select v-model="row.breakSlot" class="class-hours-cell-select">
-                    <el-option
-                      v-for="item in breakSlotOptions"
-                      :key="`class-break-${item || 'none'}`"
-                      :label="item || '不设置'"
-                      :value="item"
-                    />
-                  </el-select>
-                </template>
-              </el-table-column>
-              <el-table-column label="班级总课时" min-width="110" align="center" header-align="center">
+              <el-table-column label="智能排课总课时" min-width="120" align="center" header-align="center">
                 <template #default="{ row }">{{ getClassHourTotalLessons(row) }}</template>
               </el-table-column>
             </el-table>
@@ -6720,6 +7481,46 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <div class="dialog-actions">
                 <el-button @click="closeClassHoursByClassDialog">取消</el-button>
                 <el-button type="primary" @click="saveClassHoursByClassDialog">保存</el-button>
+              </div>
+            </template>
+          </el-dialog>
+
+          <el-dialog v-model="fixedActivitiesDialogVisible" :title="fixedActivitiesDialogTitle" width="700px">
+            <div class="fixed-activities-dialog-head">
+              <span>固定活动会显示在课表中，但不参与智能排课。</span>
+              <el-button type="primary" plain @click="addFixedActivity">新增活动</el-button>
+            </div>
+            <el-table :data="fixedActivitiesForm" border empty-text="暂无固定活动">
+              <el-table-column label="活动名称" min-width="210">
+                <template #default="{ row }">
+                  <el-input v-model="row.name" maxlength="20" placeholder="如：早读、眼保健操" />
+                </template>
+              </el-table-column>
+              <el-table-column label="节次" min-width="120">
+                <template #default="{ row }">
+                  <el-select v-model.number="row.anchorPeriod">
+                    <el-option v-for="item in 12" :key="item" :label="`第 ${item} 节`" :value="item" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="插入于" min-width="130">
+                <template #default="{ row }">
+                  <el-select v-model="row.position">
+                    <el-option label="前" value="before" />
+                    <el-option label="后" value="after" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="90" align="center">
+                <template #default="{ $index }">
+                  <el-button type="danger" link @click="removeFixedActivity($index)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <template #footer>
+              <div class="dialog-actions">
+                <el-button @click="fixedActivitiesDialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="saveFixedActivities">保存</el-button>
               </div>
             </template>
           </el-dialog>
@@ -6796,8 +7597,20 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               </div>
 
               <div class="arrangement-right">
-                <el-button @click="arrangementActionTip('下载模板')">下载模板</el-button>
-                <el-button @click="arrangementActionTip('上传数据')">上传数据</el-button>
+                <el-button @click="downloadArrangementTemplate">下载模板</el-button>
+                <el-button @click="exportArrangementData">导出数据</el-button>
+                <el-button type="primary" plain @click="triggerArrangementImport">上传设置</el-button>
+                <el-button plain @click="openAddArrangementCourseDialog">添加学科</el-button>
+                <el-button type="danger" plain :disabled="zeroArrangementCourses.length === 0" @click="deleteZeroLessonArrangementCourses">
+                  删除零课时学科
+                </el-button>
+                <input
+                  ref="arrangementImportInput"
+                  class="hidden-input"
+                  type="file"
+                  accept=".xlsx,.xls"
+                  @change="handleArrangementImport"
+                />
               </div>
             </div>
           </div>
@@ -6860,6 +7673,21 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             <el-button size="small" @click="openResetArrangementDialog">重置</el-button>
           </div>
 
+          <el-dialog v-model="arrangementCourseAddDialogVisible" title="添加学科" width="520px">
+            <el-empty v-if="addableArrangementCourses.length === 0" description="没有可恢复的学科" :image-size="72" />
+            <el-checkbox-group v-else v-model="selectedArrangementCourseIds" class="arrangement-course-checkboxes">
+              <el-checkbox v-for="course in addableArrangementCourses" :key="course.id" :label="course.id">
+                {{ course.name }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <template #footer>
+              <div class="dialog-actions">
+                <el-button @click="arrangementCourseAddDialogVisible = false">取消</el-button>
+                <el-button type="primary" :disabled="addableArrangementCourses.length === 0" @click="addArrangementCourses">添加</el-button>
+              </div>
+            </template>
+          </el-dialog>
+
           <el-dialog v-model="arrangementResetDialogVisible" title="重置课时" width="420px">
             <p class="dialog-tip">确认后将当前课程安排页面的课时全部重置为 0。</p>
             <template #footer>
@@ -6886,3 +7714,40 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
     </article>
   </section>
 </template>
+
+<style scoped>
+.course-dialog-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+  column-gap: 16px;
+}
+
+.course-dialog-form__item {
+  margin-bottom: 14px;
+}
+
+.course-dialog-form__item--compact {
+  max-width: 180px;
+}
+
+.course-dialog-form :deep(.el-form-item__content),
+.course-dialog-form :deep(.el-select),
+.course-dialog-form :deep(.el-input-number),
+.course-dialog-form :deep(.el-input) {
+  width: 100%;
+}
+
+.course-dialog-form :deep(.el-form-item__label) {
+  margin-bottom: 6px;
+}
+
+@media (max-width: 720px) {
+  .course-dialog-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .course-dialog-form__item--compact {
+    max-width: none;
+  }
+}
+</style>

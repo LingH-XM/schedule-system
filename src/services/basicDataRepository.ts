@@ -1,3 +1,5 @@
+import { withAccountQuery, withAccountStorageKey } from './accountContext'
+
 export type Campus = {
   id: string
   schoolName?: string
@@ -32,6 +34,7 @@ export type CourseScope = '小学' | '初中' | '高中'
 
 export type CourseItem = {
   id: string
+  orderNo: number
   name: string
   shortName: string
   subject: string
@@ -96,6 +99,13 @@ export type ClassRecord = {
   headTeacherId?: string
 }
 
+export type FixedActivity = {
+  id: string
+  name: string
+  anchorPeriod: number
+  position: 'before' | 'after'
+}
+
 export type ClassHourRow = {
   id: string
   campusId?: string
@@ -106,6 +116,7 @@ export type ClassHourRow = {
   afternoonLessons: number
   eveningStudy: number
   breakSlot: string
+  fixedActivities?: FixedActivity[]
 }
 
 export type ClassHourClassRow = {
@@ -120,6 +131,7 @@ export type ClassHourClassRow = {
   afternoonLessons: number
   eveningStudy: number
   breakSlot: string
+  fixedActivities?: FixedActivity[]
 }
 
 export type ScheduleWorkbenchEntry = {
@@ -154,6 +166,7 @@ export type BasicDataSnapshot = {
   arrangementBatchValues?: Record<string, number | null>
   arrangementScopes?: Record<string, unknown>
   scheduleWorkbench?: Record<string, ScheduleWorkbenchEntry>
+  termData?: Record<string, Record<string, unknown>>
   _savedAt?: number
 }
 
@@ -182,7 +195,7 @@ function snapshotSavedAt(payload: Partial<BasicDataSnapshot> | null): number {
 
 export const basicDataLocalRepository: BasicDataRepository = {
   load() {
-    const raw = localStorage.getItem(BASIC_DATA_STORAGE_KEY)
+    const raw = localStorage.getItem(withAccountStorageKey(BASIC_DATA_STORAGE_KEY))
     if (!raw) return null
 
     try {
@@ -193,13 +206,13 @@ export const basicDataLocalRepository: BasicDataRepository = {
   },
 
   save(snapshot) {
-    localStorage.setItem(BASIC_DATA_STORAGE_KEY, JSON.stringify(snapshot))
+    localStorage.setItem(withAccountStorageKey(BASIC_DATA_STORAGE_KEY), JSON.stringify(snapshot))
   }
 }
 
 export const basicDataApiRepository: BasicDataRepository = {
   async load() {
-    const endpoint = `${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`
+    const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
     try {
       const response = await fetch(endpoint, { method: 'GET' })
       if (!response.ok) {
@@ -223,7 +236,7 @@ export const basicDataApiRepository: BasicDataRepository = {
       _savedAt: Date.now()
     }
 
-    const endpoint = `${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`
+    const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
     const response = await fetch(endpoint, {
       method: 'PUT',
       headers: {

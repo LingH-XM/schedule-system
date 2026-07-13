@@ -7,8 +7,36 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Account {
+  id           String   @id @default(cuid())
+  accountId    String   @unique
+  name         String
+  deletedAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastActiveAt DateTime @default(now())
+}
+
+model User {
+  id           String   @id @default(cuid())
+  accountId    String
+  username     String   @unique
+  phone        String?  @unique
+  passwordHash String
+  name         String
+  role         String
+  isActive     Boolean  @default(true)
+  deletedAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  @@index([accountId])
+}
+
 model Snapshot {
   id        String   @id @default(cuid())
+  accountId String   @default("default")
   profile   String
   planId    String
   resource  String
@@ -17,12 +45,13 @@ model Snapshot {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([profile, planId, resource])
-  @@index([profile, resource])
+  @@unique([accountId, profile, planId, resource])
+  @@index([accountId, profile, resource])
 }
 
 model Teacher {
   pk                  String               @id @default(cuid())
+  accountId           String               @default("default")
   profile             String
   planId              String
   teacherId           String
@@ -34,30 +63,33 @@ model Teacher {
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([profile, planId, teacherId])
-  @@index([profile, planId, campusId])
-  @@index([profile, planId, name])
+  @@unique([accountId, profile, planId, teacherId])
+  @@index([accountId, profile, planId, campusId])
+  @@index([accountId, profile, planId, name])
 }
 
 model Course {
   pk                  String               @id @default(cuid())
+  accountId           String               @default("default")
   profile             String
   planId              String
   courseId            String
   name                String
   shortName           String
   subject             String
+  campusId            String               @default("")
   scopes              Json
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([profile, planId, courseId])
-  @@index([profile, planId, subject])
+  @@unique([accountId, profile, planId, courseId])
+  @@index([accountId, profile, planId, subject])
 }
 
 model SchoolClass {
   pk                  String               @id @default(cuid())
+  accountId           String               @default("default")
   profile             String
   planId              String
   classId             String
@@ -70,13 +102,14 @@ model SchoolClass {
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([profile, planId, classId])
-  @@index([profile, planId, campusId, grade])
-  @@index([profile, planId, className])
+  @@unique([accountId, profile, planId, classId])
+  @@index([accountId, profile, planId, campusId, grade])
+  @@index([accountId, profile, planId, className])
 }
 
 model TeachingAssignment {
   pk            String      @id @default(cuid())
+  accountId     String      @default("default")
   profile       String
   planId        String
   assignmentId  String
@@ -88,12 +121,12 @@ model TeachingAssignment {
   courseId      String
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-  class         SchoolClass @relation(fields: [profile, planId, classId], references: [profile, planId, classId], onDelete: Cascade)
-  course        Course      @relation(fields: [profile, planId, courseId], references: [profile, planId, courseId], onDelete: Cascade)
-  teacher       Teacher     @relation(fields: [profile, planId, teacherId], references: [profile, planId, teacherId], onDelete: Cascade)
+  class         SchoolClass @relation(fields: [accountId, profile, planId, classId], references: [accountId, profile, planId, classId], onDelete: Cascade)
+  course        Course      @relation(fields: [accountId, profile, planId, courseId], references: [accountId, profile, planId, courseId], onDelete: Cascade)
+  teacher       Teacher     @relation(fields: [accountId, profile, planId, teacherId], references: [accountId, profile, planId, teacherId], onDelete: Cascade)
 
-  @@unique([profile, planId, assignmentId])
-  @@index([profile, planId, classId])
-  @@index([profile, planId, teacherId])
-  @@index([profile, planId, courseId])
+  @@unique([accountId, profile, planId, assignmentId])
+  @@index([accountId, profile, planId, classId])
+  @@index([accountId, profile, planId, teacherId])
+  @@index([accountId, profile, planId, courseId])
 }

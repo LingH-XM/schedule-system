@@ -333,7 +333,7 @@ function adjustSchedule(id: string): void {
       <template #footer>
         <div class="dialog-actions">
           <el-button @click="closeDialog">取消</el-button>
-          <el-button type="primary" @click="submitDialog">确定</el-button>
+          <el-button type="primary" @click="submitDialog">{{ dialogType === 'create' ? '创建方案' : '保存方案' }}</el-button>
         </div>
       </template>
     </el-dialog>

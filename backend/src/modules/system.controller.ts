@@ -1,22 +1,24 @@
-import { BadRequestException, Controller, Get, Inject, Param } from '@nestjs/common'
+import { BadRequestException, Controller, Get, Inject, Param, Query } from '@nestjs/common'
 import { PrismaService } from './prisma.service.js'
-import { normalizeProfile } from './types.js'
+import { normalizeProfile, sanitizeAccountId } from './types.js'
 
 @Controller()
 export class SystemController {
   constructor(@Inject(PrismaService) private readonly prismaService: PrismaService) {}
 
   @Get('/api/:profile/system/health')
-  async getHealth(@Param('profile') profileParam: string) {
+  async getHealth(@Param('profile') profileParam: string, @Query('accountId') accountIdParam?: string) {
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
+    const accountId = sanitizeAccountId(accountIdParam)
     const prismaEnabled = this.prismaService.isEnabled()
 
     if (!prismaEnabled) {
       return {
         ok: true,
+        accountId,
         profile,
         prismaEnabled: false,
         prismaConnected: false,
@@ -29,6 +31,7 @@ export class SystemController {
     if (!client) {
       return {
         ok: true,
+        accountId,
         profile,
         prismaEnabled: true,
         prismaConnected: false,
@@ -40,7 +43,8 @@ export class SystemController {
     try {
       await client.snapshot.findUnique({
         where: {
-          profile_planId_resource: {
+          accountId_profile_planId_resource: {
+            accountId,
             profile,
             planId: 'default',
             resource: 'basic-data'
@@ -50,6 +54,7 @@ export class SystemController {
       })
       return {
         ok: true,
+        accountId,
         profile,
         prismaEnabled: true,
         prismaConnected: true,
@@ -59,6 +64,7 @@ export class SystemController {
     } catch (error) {
       return {
         ok: true,
+        accountId,
         profile,
         prismaEnabled: true,
         prismaConnected: false,
@@ -68,4 +74,3 @@ export class SystemController {
     }
   }
 }
-

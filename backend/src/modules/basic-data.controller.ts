@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Inject, Param, Put, Query } from '@nestjs/common'
 import { JsonStorageService } from './json-storage.service.js'
 import { StructuredDataSyncService } from './structured-data-sync.service.js'
-import { normalizeProfile, sanitizePlanId } from './types.js'
+import { normalizeProfile, sanitizeAccountId, sanitizePlanId } from './types.js'
 
 @Controller()
 export class BasicDataController {
@@ -11,32 +11,45 @@ export class BasicDataController {
   ) {}
 
   @Get('/api/:profile/basic-data')
-  async getScoped(@Param('profile') profileParam: string, @Query('planId') planIdParam?: string) {
+  async getScoped(
+    @Param('profile') profileParam: string,
+    @Query('planId') planIdParam?: string,
+    @Query('accountId') accountIdParam?: string
+  ) {
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
     const planId = sanitizePlanId(planIdParam)
-    return this.storage.read(profile, planId, 'basic-data')
+    const accountId = sanitizeAccountId(accountIdParam)
+    return this.storage.read(accountId, profile, planId, 'basic-data')
   }
 
   @Put('/api/:profile/basic-data')
   async putScoped(
     @Param('profile') profileParam: string,
     @Query('planId') planIdParam: string | undefined,
+    @Query('accountId') accountIdParam: string | undefined,
     @Body() body: unknown
   ) {
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    return this.write(profile, planIdParam, body, 'basic-data')
+    return this.write(profile, planIdParam, accountIdParam, body, 'basic-data')
   }
 
-  private async write(profile: 'test' | 'prod', planIdParam: string | undefined, body: unknown, resource: 'basic-data') {
+  private async write(
+    profile: 'test' | 'prod',
+    planIdParam: string | undefined,
+    accountIdParam: string | undefined,
+    body: unknown,
+    resource: 'basic-data'
+  ) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Invalid payload: expected JSON object')
     }
+    const accountId = sanitizeAccountId(accountIdParam)
     const planId = sanitizePlanId(planIdParam)
     const payload = {
       ...(body as Record<string, unknown>),
@@ -45,8 +58,8 @@ export class BasicDataController {
           ? Number((body as { _savedAt?: number })._savedAt)
           : Date.now()
     }
-    await this.storage.write(profile, planId, resource, payload)
-    await this.structuredSync.syncBasicData(profile, planId, payload)
-    return { ok: true, profile, planId, resource }
+    await this.storage.write(accountId, profile, planId, resource, payload)
+    await this.structuredSync.syncBasicData(accountId, profile, planId, payload)
+    return { ok: true, accountId, profile, planId, resource }
   }
 }

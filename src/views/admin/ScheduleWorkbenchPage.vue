@@ -563,10 +563,8 @@ function resolveDailyPeriodsCountByClassId(classId: string): number {
   const target = classHour ?? gradeHour
   if (!target) return DEFAULT_DAILY_PERIODS
   const total =
-    Number(target.morningStudy || 0) +
     Number(target.morningLessons || 0) +
-    Number(target.afternoonLessons || 0) +
-    Number(target.eveningStudy || 0)
+    Number(target.afternoonLessons || 0)
   return Math.max(1, Math.min(20, Math.floor(Number(total) || DEFAULT_DAILY_PERIODS)))
 }
 
@@ -1967,7 +1965,7 @@ function buildDefaultRulesForSolver(
   classIds.forEach((classId) => {
     const base = getClassHourBase(classId)
     if (!base) return
-    const morningEnd = Math.floor(Number(base.morningStudy || 0) + Number(base.morningLessons || 0))
+    const morningEnd = Math.floor(Number(base.morningLessons || 0))
     const afternoonLessons = Math.floor(Number(base.afternoonLessons || 0))
     if (morningEnd <= 0 || afternoonLessons <= 0) return
     noonBoundaryByClass[classId] = {
@@ -2760,10 +2758,10 @@ function toggleGradeLock(): void {
       <div class="workbench-actions">
         <span class="save-status-text">{{ saveStatusText }}</span>
         <el-button type="danger" plain @click="clearCurrentClassSchedule">清空本班</el-button>
-        <el-button @click="validateScheduleData">校验数据</el-button>
+        <el-button @click="validateScheduleData">校验课表</el-button>
         <el-button :loading="smartSchedulingLoading" @click="runSmartScheduling">智能排课</el-button>
-        <el-button plain @click="openSmartLogsDialog">查看日志</el-button>
-        <el-button :loading="persistLoading" @click="persistScheduleResult(false)">保存结果</el-button>
+        <el-button plain @click="openSmartLogsDialog">查看排课日志</el-button>
+        <el-button :loading="persistLoading" @click="persistScheduleResult(false)">保存课表</el-button>
         <el-button type="primary" :loading="persistLoading" @click="openPublishDialog">生成课表</el-button>
       </div>
     </header>
@@ -2922,7 +2920,7 @@ function toggleGradeLock(): void {
       <template #footer>
         <div class="dialog-actions">
           <el-button @click="closePublishDialog">取消</el-button>
-          <el-button type="primary" :loading="persistLoading" @click="confirmPublishDialog">开始生成</el-button>
+          <el-button type="primary" :loading="persistLoading" @click="confirmPublishDialog">确认生成</el-button>
         </div>
       </template>
     </el-dialog>

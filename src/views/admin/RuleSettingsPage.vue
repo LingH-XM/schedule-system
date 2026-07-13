@@ -163,16 +163,10 @@ const commonRuleCards: CommonRuleGuide[] = [
     usage: ['可设置每周连堂次数，并指定希望安排连堂课的星期。', '支持默认生效并按班级进行特殊覆盖。']
   },
   {
-    id: 'course-area',
-    title: '课程排课区域',
-    desc: '限定课程可排课节次区域。',
-    usage: ['通过勾选单元格限定可排节次，未勾选节次不参与排课。', '可在全部班级与单班级之间联动配置。']
-  },
-  {
-    id: 'course-ban',
-    title: '课程不排课',
-    desc: '设置课程禁排节次。',
-    usage: ['用于显式禁止某课程在指定时段上课。', '与排课区域配合可更精准限制课程分布。']
+    id: 'course-slot',
+    title: '课程时段设置',
+    desc: '按课程、班级设置可排课区域或禁止排课的节次。',
+    usage: ['切换设置状态后，在同一张节次表格中完成配置。', '排课区域限定可排节次；不排课则禁止课程进入指定节次。']
   },
   {
     id: 'course-relation',
@@ -277,9 +271,41 @@ function resolveTimetableShape(
   return { dayCount, periodCount }
 }
 
-const fixedPointDays = computed(() => allWeekDays.slice(0, resolveTimetableShape(selectedCampus.value, selectedGrade.value).dayCount))
+function resolveConfiguredTimetableShape(campusName: string, grade: string): { dayCount: number; periodCount: number } | null {
+  const campusId = campusIdByName.value.get(campusName)
+  if (!campusId) return null
+
+  const matchesGrade = <T extends { grade: string }>(item: T) => grade === '全部年级' || item.grade === grade
+  const rows = [
+    ...adminBaseSnapshot.value.classHourRows.filter((item) => item.campusId === campusId && matchesGrade(item)),
+    ...adminBaseSnapshot.value.classHourClassRows.filter((item) => item.campusId === campusId && matchesGrade(item))
+  ]
+
+  const configuredRows = rows
+    .map((item) => ({
+      weeklyDays: Math.floor(Number(item.weeklyDays) || 0),
+      periodCount: Math.floor(
+        Number(item.morningStudy || 0) +
+          Number(item.morningLessons || 0) +
+          Number(item.afternoonLessons || 0) +
+          Number(item.eveningStudy || 0)
+      )
+    }))
+    .filter((item) => item.weeklyDays > 0 && item.periodCount > 0)
+
+  if (configuredRows.length === 0) return null
+
+  return {
+    dayCount: Math.min(7, Math.max(...configuredRows.map((item) => item.weeklyDays))),
+    periodCount: Math.min(12, Math.max(...configuredRows.map((item) => item.periodCount)))
+  }
+}
+
+const fixedPointTimetableShape = computed(() => resolveConfiguredTimetableShape(selectedCampus.value, selectedGrade.value))
+const hasFixedPointTimetable = computed(() => fixedPointTimetableShape.value !== null)
+const fixedPointDays = computed(() => allWeekDays.slice(0, fixedPointTimetableShape.value?.dayCount ?? 0))
 const fixedPointPeriods = computed(() =>
-  Array.from({ length: resolveTimetableShape(selectedCampus.value, selectedGrade.value).periodCount }, (_, idx) => idx + 1)
+  Array.from({ length: fixedPointTimetableShape.value?.periodCount ?? 0 }, (_, idx) => idx + 1)
 )
 const teacherBanDays = computed(() => allWeekDays.slice(0, resolveTimetableShape('', '全部年级').dayCount))
 const teacherBanPeriods = computed(() =>
@@ -317,7 +343,9 @@ const ruleSettingsSnapshot = loadRuleSettingsSnapshot()
 const fixedPointRules = ref<GlobalFixedPointRecord[]>(cloneFixedPointRules(ruleSettingsSnapshot.globalFixedPoints))
 const fixedPointDraftRules = ref<GlobalFixedPointRecord[]>(cloneFixedPointRules(ruleSettingsSnapshot.globalFixedPoints))
 const fallbackBanSubjects = ['语文', '数学', '英语', '物理', '化学', '生物', '历史', '政治', '地理', '音乐', '美术', '信息']
+const defaultMainSubjects = ['语文', '数学', '英语']
 const activeBanSubject = ref('语文')
+const courseSlotMode = ref<'area' | 'ban'>('area')
 const consecutiveTypeOptions = ['正课']
 const selectedConsecutiveType = ref('正课')
 const activeConsecutiveSubject = ref('语文')
@@ -885,15 +913,20 @@ function mainRuleKey(campus: string, grade: string): string {
   return `${campus}::${grade}`
 }
 
+function getDefaultMainSubjects(): string[] {
+  const availableSubjects = new Set(mainSubjectOptions.value)
+  return defaultMainSubjects.filter((subject) => availableSubjects.has(subject))
+}
+
 function loadCurrentMainSecondarySelection(): void {
   if (!selectedMainCampus.value || !selectedMainGrade.value) {
-    selectedMainSubjects.value = []
+    selectedMainSubjects.value = getDefaultMainSubjects()
     return
   }
   const key = mainRuleKey(selectedMainCampus.value, selectedMainGrade.value)
   const current = mainSecondaryRules.value.find((item) => mainRuleKey(item.campus, item.grade) === key)
   if (!current) {
-    selectedMainSubjects.value = []
+    selectedMainSubjects.value = getDefaultMainSubjects()
     return
   }
   const set = new Set(mainSubjectOptions.value)
@@ -1275,6 +1308,18 @@ const selectedAreaClassRanges = ref<string[]>([])
 const selectedBanCampus = ref('')
 const selectedBanGrade = ref('')
 const selectedBanClassRanges = ref<string[]>([])
+
+watch(courseSlotMode, (mode) => {
+  if (mode === 'ban') {
+    activeBanSubject.value = activeAreaSubject.value
+    selectedBanCampus.value = selectedAreaCampus.value
+    selectedBanGrade.value = selectedAreaGrade.value
+    return
+  }
+  activeAreaSubject.value = activeBanSubject.value
+  selectedAreaCampus.value = selectedBanCampus.value
+  selectedAreaGrade.value = selectedBanGrade.value
+})
 
 const areaCampusOptions = computed(() => campusOptions.value)
 const areaGradeOptions = computed(() => {
@@ -1853,6 +1898,16 @@ async function setCellValue(period: number, day: string): Promise<void> {
   await setFixedPointForSlots(targetSlots, period, day)
 }
 
+async function setSelectedFixedPoints(): Promise<void> {
+  const slots = [...fixedPointSelectedSlots.value]
+  if (slots.length === 0) {
+    notify.warning('请先框选要设置的固定点格子。')
+    return
+  }
+  const [periodRaw, day] = slots[0].split('-', 2)
+  await setFixedPointForSlots(slots, Number(periodRaw) || 1, day || fixedPointDays.value[0] || '周一')
+}
+
 async function setFixedPointForSlots(targetSlots: string[], fallbackPeriod: number, fallbackDay: string): Promise<void> {
   if (!selectedCampus.value) {
     notify.warning('请先选择校区。')
@@ -1935,8 +1990,13 @@ function isFixedCellSelected(period: number, day: string): boolean {
 function onFixedCellMouseDown(event: MouseEvent, period: number, day: string): void {
   if (event.button !== 0) return
   fixedPointSelecting.value = true
-  fixedPointSelectionStart.value = { period, day }
+  if (!event.shiftKey || !fixedPointSelectionStart.value) {
+    fixedPointSelectionStart.value = { period, day }
+  }
   fixedPointSelectedSlots.value = [fixedSlotKey(period, day)]
+  if (event.shiftKey && fixedPointSelectionStart.value) {
+    onFixedCellMouseEnter(period, day)
+  }
 }
 
 function onFixedCellMouseEnter(period: number, day: string): void {
@@ -2492,8 +2552,7 @@ const commonRuleStepIds = new Set([
   'course-combine',
   'course-odd-even',
   'course-consecutive',
-  'course-area',
-  'course-ban',
+  'course-slot',
   'course-relation'
 ])
 const teacherRuleStepIds = new Set(['teacher-ban', 'teacher-hours', 'teacher-mutual'])
@@ -2887,7 +2946,8 @@ watch(
     if (!grades.includes(relationForm.grade)) {
       relationForm.grade = grades[0] || ''
     }
-  }
+  },
+  { immediate: true }
 )
 
 watch(
@@ -3120,6 +3180,11 @@ function openTeacherRulePage(ruleId: string): void {
 watch(
   () => activeStep.value,
   (stepId, prevStepId) => {
+    if (stepId === 'course-area' || stepId === 'course-ban') {
+      courseSlotMode.value = stepId === 'course-ban' ? 'ban' : 'area'
+      activeStep.value = 'course-slot'
+      return
+    }
     if (stepId === 'course-common') {
       activeCommonRuleTab.value = 'course-common'
       return
@@ -3134,7 +3199,8 @@ watch(
     if (teacherRuleStepIds.has(stepId)) {
       selectedTeacherRuleId.value = stepId
     }
-  }
+  },
+  { immediate: true }
 )
 </script>
 
@@ -3194,7 +3260,7 @@ watch(
             <p>数据看板：展示当前学校基础数据中的校区、班级、教师、学生概览。</p>
           </div>
           <div class="rule-head-actions">
-            <el-button size="small" :loading="adminBaseLoading" @click="loadAdminBaseOverview">刷新数据</el-button>
+            <el-button size="small" :loading="adminBaseLoading" @click="loadAdminBaseOverview">刷新概览</el-button>
           </div>
         </header>
 
@@ -3279,7 +3345,9 @@ watch(
             >
               <h3>{{ item.title }}</h3>
               <p>{{ item.desc }}</p>
-              <el-button type="primary" link @click.stop="jumpToRulePage(item.id)">进入</el-button>
+              <div class="rule-overview-card-actions">
+                <el-button type="primary" link @click.stop="jumpToRulePage(item.id)">进入</el-button>
+              </div>
             </el-card>
           </div>
         </section>
@@ -3648,8 +3716,11 @@ watch(
             <p>规则介绍：可设置固定节次且无教师安排的课程，例如，班会、社团、扫除、自习、选修等。</p>
           </div>
           <div class="rule-head-actions">
-            <el-button size="small" @click="clearFixedPoints">清空</el-button>
-            <el-button type="primary" size="small" @click="saveFixedPoints">保存</el-button>
+            <el-button size="small" :disabled="!hasFixedPointTimetable || fixedPointSelectedSlots.length === 0" @click="setSelectedFixedPoints">
+              设置选中格
+            </el-button>
+            <el-button size="small" :disabled="!hasFixedPointTimetable" @click="clearFixedPoints">清空</el-button>
+            <el-button type="primary" size="small" :disabled="!hasFixedPointTimetable" @click="saveFixedPoints">保存</el-button>
           </div>
         </header>
 
@@ -3670,33 +3741,38 @@ watch(
             </div>
           </div>
 
-          <p class="fixed-hint">拖拽可框选多个格子，右键菜单可设置或删除框选区域。</p>
+          <template v-if="hasFixedPointTimetable">
+            <p class="fixed-hint">拖拽或 Shift+单击可框选多个格子，点击“设置选中格”可一次输入并应用到全部选区；右键也可设置或删除。</p>
 
-          <div class="fixed-table-wrap" @mouseup="onFixedCellMouseUp" @mouseleave="onFixedCellMouseUp">
-            <table class="fixed-table">
-              <thead>
-                <tr>
-                  <th>节次/周</th>
-                  <th v-for="day in fixedPointDays" :key="day">{{ day }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="period in fixedPointPeriods" :key="period">
-                  <td>{{ period }}</td>
-                  <td
-                    v-for="day in fixedPointDays"
-                    :key="`${period}-${day}`"
-                    :class="['fixed-cell', { 'is-selected': isFixedCellSelected(period, day) }]"
-                    @mousedown.prevent="onFixedCellMouseDown($event, period, day)"
-                    @mouseenter="onFixedCellMouseEnter(period, day)"
-                    @dblclick="setCellValue(period, day)"
-                    @contextmenu.prevent="onFixedCellContextMenu($event, period, day)"
-                  >
-                    {{ cellValue(period, day) }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="fixed-table-wrap" @mouseup="onFixedCellMouseUp" @mouseleave="onFixedCellMouseUp">
+              <table class="fixed-table">
+                <thead>
+                  <tr>
+                    <th>节次/周</th>
+                    <th v-for="day in fixedPointDays" :key="day">{{ day }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="period in fixedPointPeriods" :key="period">
+                    <td>{{ period }}</td>
+                    <td
+                      v-for="day in fixedPointDays"
+                      :key="`${period}-${day}`"
+                      :class="['fixed-cell', { 'is-selected': isFixedCellSelected(period, day) }]"
+                      @mousedown.prevent="onFixedCellMouseDown($event, period, day)"
+                      @mouseenter="onFixedCellMouseEnter(period, day)"
+                      @dblclick="setCellValue(period, day)"
+                      @contextmenu.prevent="onFixedCellContextMenu($event, period, day)"
+                    >
+                      {{ cellValue(period, day) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+          <div v-else class="fixed-empty-state">
+            请先在“基础数据”中完成班级课时设置，再配置全局固定点。
           </div>
 
           <div
@@ -3711,13 +3787,17 @@ watch(
         </section>
       </template>
 
-      <template v-else-if="activeStep === 'course-ban'">
+      <template v-else-if="activeStep === 'course-slot' && courseSlotMode === 'ban'">
         <header class="rule-head">
           <div>
-            <h1>课程不排课</h1>
-            <p>规则介绍：设置为课程不排课的节次，排课引擎会在设置的节次中不安排该课程。</p>
+            <h1>课程时段设置</h1>
+            <p>当前状态：不排课。排课引擎不会将课程安排在标记的节次。</p>
           </div>
           <div class="rule-head-actions">
+            <el-radio-group v-model="courseSlotMode" class="course-slot-mode">
+              <el-radio-button label="area">排课区域</el-radio-button>
+              <el-radio-button label="ban">不排课</el-radio-button>
+            </el-radio-group>
             <el-button size="small" @click="clearCurrentBanRule">清空</el-button>
             <el-button type="primary" size="small" @click="saveCurrentBanRule">保存</el-button>
           </div>
@@ -3816,13 +3896,17 @@ watch(
         </section>
       </template>
 
-      <template v-else-if="activeStep === 'course-area'">
+      <template v-else-if="activeStep === 'course-slot' && courseSlotMode === 'area'">
         <header class="rule-head">
           <div>
-            <h1>课程排课区域</h1>
-            <p>规则介绍：设置课程固定安排的区域。若不设置，默认在全部可用节次上安排课程。</p>
+            <h1>课程时段设置</h1>
+            <p>当前状态：排课区域。勾选的节次是该课程允许排课的范围。</p>
           </div>
           <div class="rule-head-actions">
+            <el-radio-group v-model="courseSlotMode" class="course-slot-mode">
+              <el-radio-button label="area">排课区域</el-radio-button>
+              <el-radio-button label="ban">不排课</el-radio-button>
+            </el-radio-group>
             <el-button size="small" @click="clearCurrentAreaRule">清空</el-button>
             <el-button type="primary" size="small" @click="saveCurrentAreaRule">保存</el-button>
           </div>

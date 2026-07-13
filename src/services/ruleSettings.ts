@@ -1,3 +1,5 @@
+import { withAccountQuery, withAccountStorageKey } from './accountContext'
+
 export type OddEvenRuleRecord = {
   id: string
   campus: string
@@ -746,7 +748,7 @@ function isSnapshotPayload(payload: unknown): payload is Partial<RuleSettingsSna
 }
 
 export function loadRuleSettingsSnapshot(): RuleSettingsSnapshot {
-  const raw = localStorage.getItem(RULE_SETTINGS_STORAGE_KEY)
+  const raw = localStorage.getItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY))
   if (!raw) {
     return createDefaultSnapshot()
   }
@@ -840,13 +842,10 @@ export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
     _savedAt: Date.now()
   }
 
-  localStorage.setItem(
-    RULE_SETTINGS_STORAGE_KEY,
-    JSON.stringify(serialized)
-  )
+  localStorage.setItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY), JSON.stringify(serialized))
 
   if (ruleSettingsSource === 'api') {
-    const endpoint = `${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`
+    const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
     void fetch(endpoint, {
       method: 'PUT',
       headers: {
@@ -865,7 +864,7 @@ export async function hydrateRuleSettingsSnapshotFromApi(): Promise<RuleSettings
     return local
   }
 
-  const endpoint = `${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`
+  const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
   try {
     const response = await fetch(endpoint, { method: 'GET' })
     if (!response.ok) {
@@ -878,7 +877,7 @@ export async function hydrateRuleSettingsSnapshotFromApi(): Promise<RuleSettings
     const apiSavedAt = snapshotSavedAt(payload)
     const localSavedAt = snapshotSavedAt(local)
     if (apiSavedAt > localSavedAt) {
-      localStorage.setItem(RULE_SETTINGS_STORAGE_KEY, JSON.stringify(payload))
+      localStorage.setItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY), JSON.stringify(payload))
       return loadRuleSettingsSnapshot()
     }
     return local

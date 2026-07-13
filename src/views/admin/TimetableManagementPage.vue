@@ -10,6 +10,7 @@ import {
   type CourseItem,
   type ClassHourClassRow,
   type ClassHourRow,
+  type FixedActivity,
   type TeacherRecord
 } from '../../services/basicDataRepository'
 import {
@@ -25,6 +26,7 @@ import {
   type GlobalFixedPointRecord
 } from '../../services/ruleSettings'
 import { notify } from '../../utils/notify'
+import { formatSchoolTermLabel } from '../../utils/termLabel'
 
 type LessonLike = {
   name?: string
@@ -38,7 +40,7 @@ type TimetableRow = {
   label: string
   period: number | null
   isSpecial: boolean
-  specialType?: 'break' | 'noon'
+  specialType?: 'break' | 'noon' | 'fixed'
 }
 
 const timetableType = ref('班级课表')
@@ -95,15 +97,7 @@ function formatDateTime(ts: number): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
 }
 
-function formatTermLabel(value: string): string {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  const matched = text.match(/^(\d{4}-\d{4})-(.+)$/)
-  if (!matched) return text
-  return `${matched[1]} ${matched[2]}`
-}
-
-const selectedTermLabel = computed(() => formatTermLabel(selectedTerm.value))
+const selectedTermLabel = computed(() => formatSchoolTermLabel(selectedTerm.value))
 const schedulePlanNameById = computed(
   () => new Map(schedulePlans.value.map((item) => [item.id, item.name || item.id] as const))
 )
@@ -165,9 +159,9 @@ function formatClassDisplayName(classItem: ClassRecord | null | undefined): stri
   if (!classItem) return ''
   const grade = String(classItem.grade || '').trim()
   const className = String(classItem.className || '').trim()
+  if (!grade) return className
   if (!className) return grade
-  if (grade && className.startsWith(grade)) return className
-  return grade ? `${grade}-${className}` : className
+  return `${grade} | ${className}`
 }
 
 const dayCount = computed(() => {
@@ -186,16 +180,14 @@ const lessonCount = computed(() => {
   const gradeHour = classHourRows.value.find(
     (item) => item.campusId === activeClass.value?.campusId && item.grade === activeClass.value?.grade
   )
-  const total = Number(classHour?.morningStudy ?? gradeHour?.morningStudy ?? 0)
-    + Number(classHour?.morningLessons ?? gradeHour?.morningLessons ?? 4)
+  const total = Number(classHour?.morningLessons ?? gradeHour?.morningLessons ?? 4)
     + Number(classHour?.afternoonLessons ?? gradeHour?.afternoonLessons ?? 4)
-    + Number(classHour?.eveningStudy ?? gradeHour?.eveningStudy ?? 0)
   return Math.max(1, Math.min(12, total))
 })
 
 const activeClassHourConfig = computed(() => {
   if (!activeClass.value) {
-    return { morningStudy: 0, morningLessons: 4, afternoonLessons: 4, breakSlot: '' }
+    return { morningLessons: 4, afternoonLessons: 4, breakSlot: '', fixedActivities: [] as FixedActivity[] }
   }
   const classHour = classHourClassRows.value.find((item) => item.classId === activeClass.value?.id)
   const gradeHour = classHourRows.value.find(
@@ -203,10 +195,10 @@ const activeClassHourConfig = computed(() => {
   )
   const source = classHour ?? gradeHour
   return {
-    morningStudy: Number(source?.morningStudy ?? 0),
     morningLessons: Number(source?.morningLessons ?? 4),
     afternoonLessons: Number(source?.afternoonLessons ?? 4),
-    breakSlot: String(source?.breakSlot || '')
+    breakSlot: String(source?.breakSlot || ''),
+    fixedActivities: getFixedActivities(source, Math.max(1, Number(source?.morningLessons ?? 4) + Number(source?.afternoonLessons ?? 4)))
   }
 })
 
@@ -215,24 +207,22 @@ const periods = computed(() => Array.from({ length: lessonCount.value }).map((_,
 
 const breakAfterPeriod = computed(() => {
   const config = activeClassHourConfig.value
-  const morningStudy = Math.max(0, config.morningStudy)
   const morningLessons = Math.max(0, config.morningLessons)
   const afternoonLessons = Math.max(0, config.afternoonLessons)
   const total = Math.max(1, lessonCount.value)
-  if (config.breakSlot === '上午第2节课后') return Math.min(total, morningStudy + 2)
-  if (config.breakSlot === '上午第3节课后') return Math.min(total, morningStudy + 3)
-  if (config.breakSlot === '下午第2节课后') return Math.min(total, morningStudy + morningLessons + Math.min(2, afternoonLessons))
+  if (config.breakSlot === '上午第2节课后') return Math.min(total, 2)
+  if (config.breakSlot === '上午第3节课后') return Math.min(total, 3)
+  if (config.breakSlot === '下午第2节课后') return Math.min(total, morningLessons + Math.min(2, afternoonLessons))
   return 0
 })
 
 const noonAfterPeriod = computed(() => {
   const config = activeClassHourConfig.value
-  const morningStudy = Math.max(0, config.morningStudy)
   const morningLessons = Math.max(0, config.morningLessons)
   const afternoonLessons = Math.max(0, config.afternoonLessons)
   const total = Math.max(1, lessonCount.value)
   if (afternoonLessons <= 0) return 0
-  const boundary = morningStudy + morningLessons
+  const boundary = morningLessons
   if (boundary <= 0 || boundary >= total) return 0
   return boundary
 })
@@ -242,6 +232,11 @@ const timetableRows = computed<TimetableRow[]>(() => {
   const breakAfter = breakAfterPeriod.value
   const noonAfter = noonAfterPeriod.value
   periods.value.forEach((period) => {
+    activeClassHourConfig.value.fixedActivities
+      .filter((item) => item.position === 'before' && item.anchorPeriod === period)
+      .forEach((item) => {
+        rows.push({ key: `fixed-before-${item.id}`, label: item.name, period: null, isSpecial: true, specialType: 'fixed' })
+      })
     rows.push({
       key: `p-${period}`,
       label: String(period),
@@ -266,6 +261,11 @@ const timetableRows = computed<TimetableRow[]>(() => {
         specialType: 'break'
       })
     }
+    activeClassHourConfig.value.fixedActivities
+      .filter((item) => item.position === 'after' && item.anchorPeriod === period)
+      .forEach((item) => {
+        rows.push({ key: `fixed-after-${item.id}`, label: item.name, period: null, isSpecial: true, specialType: 'fixed' })
+      })
   })
   return rows
 })
@@ -313,14 +313,9 @@ const activeHeadTeacherName = computed(() => {
 
 const schoolDayCount = computed(() => Math.max(5, ...classRows.value.map((item) => getClassHourConfig(item).weeklyDays)))
 const schoolTotalLessons = computed(() => Math.max(1, ...classRows.value.map((item) => getClassHourConfig(item).totalLessons)))
-const schoolMorningStudy = computed(() => Math.max(0, ...classRows.value.map((item) => getClassHourConfig(item).morningStudy)))
 const schoolDays = computed(() => allDays.slice(0, schoolDayCount.value))
 const schoolPeriods = computed(() =>
-  Array.from({ length: schoolTotalLessons.value }).map((_, index) => {
-    const period = index + 1
-    const label = period <= schoolMorningStudy.value ? `早${period}` : String(period - schoolMorningStudy.value)
-    return { period, label }
-  })
+  Array.from({ length: schoolTotalLessons.value }).map((_, index) => ({ period: index + 1, label: String(index + 1) }))
 )
 const schoolRows = computed(() =>
   classRows.value.map((item) => ({
@@ -384,33 +379,51 @@ const courseByName = computed(() => {
   return map
 })
 
+function getFixedActivities(
+  source: Pick<ClassHourRow, 'fixedActivities' | 'morningStudy' | 'eveningStudy' | 'breakSlot'> | undefined,
+  totalLessons: number
+): FixedActivity[] {
+  if (source?.fixedActivities?.length) {
+    return source.fixedActivities
+      .filter((item) => String(item.name || '').trim())
+      .map((item, index) => ({
+        id: String(item.id || `fixed-${index}`),
+        name: String(item.name).trim(),
+        anchorPeriod: Math.max(1, Math.min(totalLessons, Math.floor(Number(item.anchorPeriod) || 1))),
+        position: item.position === 'before' ? 'before' : 'after'
+      }))
+  }
+  const legacy: FixedActivity[] = []
+  if (Number(source?.morningStudy || 0) > 0) legacy.push({ id: 'legacy-morning-study', name: '早自习', anchorPeriod: 1, position: 'before' })
+  if (Number(source?.eveningStudy || 0) > 0) legacy.push({ id: 'legacy-evening-study', name: '晚自习', anchorPeriod: totalLessons, position: 'after' })
+  return legacy
+}
+
 function getClassHourConfig(classItem: ClassRecord | null): {
   weeklyDays: number
   totalLessons: number
-  morningStudy: number
   morningLessons: number
   afternoonLessons: number
   breakSlot: string
+  fixedActivities: FixedActivity[]
 } {
   if (!classItem) {
-    return { weeklyDays: 5, totalLessons: 8, morningStudy: 0, morningLessons: 4, afternoonLessons: 4, breakSlot: '' }
+    return { weeklyDays: 5, totalLessons: 8, morningLessons: 4, afternoonLessons: 4, breakSlot: '', fixedActivities: [] }
   }
   const classHour = classHourClassRows.value.find((item) => item.classId === classItem.id)
   const gradeHour = classHourRows.value.find((item) => item.campusId === classItem.campusId && item.grade === classItem.grade)
   const source = classHour ?? gradeHour
   const weeklyDays = Math.max(1, Math.min(7, Number(source?.weeklyDays ?? 5)))
-  const morningStudy = Math.max(0, Number(source?.morningStudy ?? 0))
   const morningLessons = Math.max(0, Number(source?.morningLessons ?? 4))
   const afternoonLessons = Math.max(0, Number(source?.afternoonLessons ?? 4))
-  const eveningStudy = Math.max(0, Number(source?.eveningStudy ?? 0))
-  const totalLessons = Math.max(1, Math.min(12, morningStudy + morningLessons + afternoonLessons + eveningStudy))
+  const totalLessons = Math.max(1, Math.min(12, morningLessons + afternoonLessons))
   return {
     weeklyDays,
     totalLessons,
-    morningStudy,
     morningLessons,
     afternoonLessons,
-    breakSlot: String(source?.breakSlot || '')
+    breakSlot: String(source?.breakSlot || ''),
+    fixedActivities: getFixedActivities(source, totalLessons)
   }
 }
 
@@ -418,13 +431,16 @@ function buildClassTimetableRows(classItem: ClassRecord): TimetableRow[] {
   const config = getClassHourConfig(classItem)
   const rows: TimetableRow[] = []
   const periodsOfClass = Array.from({ length: config.totalLessons }).map((_, index) => index + 1)
-  const noonAfter = config.afternoonLessons > 0 ? config.morningStudy + config.morningLessons : 0
+  const noonAfter = config.afternoonLessons > 0 ? config.morningLessons : 0
   let breakAfter = 0
-  if (config.breakSlot === '上午第2节课后') breakAfter = config.morningStudy + 2
-  if (config.breakSlot === '上午第3节课后') breakAfter = config.morningStudy + 3
-  if (config.breakSlot === '下午第2节课后') breakAfter = config.morningStudy + config.morningLessons + Math.min(2, config.afternoonLessons)
+  if (config.breakSlot === '上午第2节课后') breakAfter = 2
+  if (config.breakSlot === '上午第3节课后') breakAfter = 3
+  if (config.breakSlot === '下午第2节课后') breakAfter = config.morningLessons + Math.min(2, config.afternoonLessons)
   breakAfter = Math.max(0, Math.min(config.totalLessons, breakAfter))
   periodsOfClass.forEach((period) => {
+    config.fixedActivities
+      .filter((item) => item.position === 'before' && item.anchorPeriod === period)
+      .forEach((item) => rows.push({ key: `fixed-before-${item.id}`, label: item.name, period: null, isSpecial: true, specialType: 'fixed' }))
     rows.push({
       key: `p-${period}`,
       label: String(period),
@@ -449,6 +465,9 @@ function buildClassTimetableRows(classItem: ClassRecord): TimetableRow[] {
         specialType: 'break'
       })
     }
+    config.fixedActivities
+      .filter((item) => item.position === 'after' && item.anchorPeriod === period)
+      .forEach((item) => rows.push({ key: `fixed-after-${item.id}`, label: item.name, period: null, isSpecial: true, specialType: 'fixed' }))
   })
   return rows
 }
@@ -679,7 +698,6 @@ function buildGradeLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string
   const ws = workbook.addWorksheet(sheetName.slice(0, 31))
   const dayCountOfSheet = Math.max(...rowsOfGrade.map((item) => getClassHourConfig(item).weeklyDays), 5)
   const totalLessonsOfSheet = Math.max(...rowsOfGrade.map((item) => getClassHourConfig(item).totalLessons), 1)
-  const morningStudyOfSheet = Math.max(...rowsOfGrade.map((item) => getClassHourConfig(item).morningStudy), 0)
   const totalCols = 1 + dayCountOfSheet * totalLessonsOfSheet
   ws.columns = [{ width: 12 }, ...new Array(totalCols - 1).fill(null).map(() => ({ width: 13.5 }))]
   const exportDays = allDays.slice(0, dayCountOfSheet)
@@ -703,7 +721,7 @@ function buildGradeLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string
   const headerPeriods: string[] = ['节次']
   exportDays.forEach(() => {
     for (let period = 1; period <= totalLessonsOfSheet; period += 1) {
-      headerPeriods.push(period <= morningStudyOfSheet ? `早${period}` : String(period - morningStudyOfSheet))
+      headerPeriods.push(String(period))
     }
   })
   const row3 = ws.addRow(headerPeriods)
@@ -723,7 +741,8 @@ function buildGradeLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string
     const classHourConfig = getClassHourConfig(classItem)
     const headTeacherName =
       optionSettings.headTeacher && classItem.headTeacherId ? String(teacherNameById.value.get(classItem.headTeacherId) || '') : ''
-    const classLabel = headTeacherName ? `${classItem.className}\n(${headTeacherName})` : classItem.className
+    const displayName = formatClassDisplayName(classItem)
+    const classLabel = headTeacherName ? `${displayName}\n(${headTeacherName})` : displayName
     const dataCells: string[] = []
     exportDays.forEach((day) => {
       for (let period = 1; period <= totalLessonsOfSheet; period += 1) {
@@ -756,7 +775,21 @@ function buildSmallSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, exp
     ws.mergeCells(titleRow.number, 1, titleRow.number, 13)
     titleRow.height = 20
     styleRowCells(titleRow, 1, 13, { bold: true, align: 'left', fontSize: 11.5 })
-    const classRow = ws.addRow([`${left.grade}${left.className}`, '', '', '', '', '', '', right ? `${right.grade}${right.className}` : '', '', '', '', '', ''])
+    const classRow = ws.addRow([
+      formatClassDisplayName(left),
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      right ? formatClassDisplayName(right) : '',
+      '',
+      '',
+      '',
+      '',
+      ''
+    ])
     classRow.height = 14
     styleRowCells(classRow, 1, 13, { bold: true, align: 'left' })
     const headRow = ws.addRow(['节次', ...defaultDays, '', '节次', ...defaultDays])
@@ -820,11 +853,12 @@ function buildSchoolHorizontalSheetExcel(workbook: ExcelJS.Workbook, sheetName: 
         cells.push(schoolCellText(row.classId, day, period.period))
       })
     })
-    const dataRow = ws.addRow([row.className, row.headTeacherName, ...cells])
+    const classLabel = formatClassDisplayName(row)
+    const dataRow = ws.addRow([classLabel, row.headTeacherName, ...cells])
     const maxLines = Math.max(
       1,
       ...cells.map((item) => Math.max(1, String(item || '').split('\n').length)),
-      Math.max(1, String(row.className || '').split('\n').length)
+      Math.max(1, String(classLabel || '').split('\n').length)
     )
     dataRow.height = Math.max(24, maxLines * 16)
     styleRowCells(dataRow, 1, totalCols)
@@ -841,7 +875,7 @@ function buildSchoolVerticalSheetExcel(workbook: ExcelJS.Workbook, sheetName: st
   row1.height = 25
   styleRowCells(row1, 1, totalCols, { bold: true, align: 'left', fontSize: 11.5 })
 
-  const row2 = ws.addRow(['周次', '节次', ...schoolRows.value.map((item) => item.className)])
+  const row2 = ws.addRow(['周次', '节次', ...schoolRows.value.map((item) => formatClassDisplayName(item))])
   row2.height = 24
   styleRowCells(row2, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
 
@@ -1117,7 +1151,7 @@ watch(
         <el-tab-pane v-for="item in timetableTypes" :key="item" :label="item" :name="item" />
       </el-tabs>
       <div class="tm-actions">
-        <el-button type="primary" plain>打印</el-button>
+        <el-button type="primary" plain>打印课表</el-button>
         <el-button type="primary" @click="exportDialogVisible = true">导出课表</el-button>
       </div>
     </header>
@@ -1128,7 +1162,7 @@ watch(
         <el-option v-for="item in publishedPlanOptions" :key="item.id" :label="item.label" :value="item.id" />
       </el-select>
       <el-button type="danger" plain :disabled="!currentPlanId || !publishedAt" @click="removeCurrentTimetableData">
-        删除课表数据
+        删除课表
       </el-button>
       <el-select v-model="selectedCampusId" placeholder="选择校区" class="tm-filter-select">
         <el-option v-for="item in campusOptions" :key="item.id" :label="item.name" :value="item.id" />
@@ -1243,7 +1277,11 @@ watch(
           border
           class="tm-table"
         >
-          <el-table-column prop="className" label="班级" width="140" />
+          <el-table-column label="班级" width="160">
+            <template #default="{ row }">
+              {{ formatClassDisplayName(row) }}
+            </template>
+          </el-table-column>
           <el-table-column v-if="optionEnabled('headTeacher')" prop="headTeacherName" label="班主任" width="140" />
           <el-table-column v-for="day in schoolDays" :key="`school-${day}`" :label="day">
             <el-table-column
@@ -1270,7 +1308,7 @@ watch(
         >
           <el-table-column prop="day" label="周次" width="98" />
           <el-table-column prop="period" label="节次" width="84" />
-          <el-table-column v-for="row in schoolRows" :key="`v-${row.classId}`" :label="row.className" min-width="128">
+          <el-table-column v-for="row in schoolRows" :key="`v-${row.classId}`" :label="formatClassDisplayName(row)" min-width="148">
             <template #default="{ row: dataRow }">
               <div class="tm-lesson-cell">
                 <span>{{ schoolVerticalCellText(dataRow, row.classId) }}</span>
@@ -1330,7 +1368,7 @@ watch(
       </div>
       <template #footer>
         <el-button @click="exportDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmExportExcel">导出 Excel</el-button>
+        <el-button type="primary" @click="confirmExportExcel">导出课表</el-button>
       </template>
     </el-dialog>
   </article>

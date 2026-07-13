@@ -1,5 +1,8 @@
+import { withAccountQuery } from './accountContext'
+
 export type SystemHealth = {
   ok: boolean
+  accountId?: string
   profile: 'test' | 'prod'
   prismaEnabled: boolean
   prismaConnected: boolean
@@ -20,7 +23,7 @@ export function isApiSourceEnabled(): boolean {
 }
 
 export async function fetchSystemHealth(): Promise<SystemHealth> {
-  const response = await fetch(endpoint(`/api/${profile}/system/health`), { method: 'GET' })
+  const response = await fetch(withAccountQuery(endpoint(`/api/${profile}/system/health`)), { method: 'GET' })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return (await response.json()) as SystemHealth
 }
