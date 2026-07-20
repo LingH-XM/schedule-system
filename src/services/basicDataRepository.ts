@@ -67,6 +67,7 @@ export type TeacherRecord = {
   name: string
   subject: string
   subjectGroup: string
+  weeklyLessonRequirement: number
   campusId: string
 }
 

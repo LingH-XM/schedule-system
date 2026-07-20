@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
 import ExcelJS from 'exceljs'
 import { saveAs } from 'file-saver'
 import {
@@ -11,12 +10,12 @@ import {
   type ClassHourClassRow,
   type ClassHourRow,
   type FixedActivity,
-  type TeacherRecord
+  type TeacherRecord,
+  type TeachingCycle
 } from '../../services/basicDataRepository'
 import {
   loadSchedulePlans,
   loadWorkbenchPersistSnapshot,
-  saveWorkbenchPersistSnapshot,
   type SchedulePlan,
   type WorkbenchPersistSnapshot
 } from '../../services/scheduleStateRepository'
@@ -27,12 +26,21 @@ import {
 } from '../../services/ruleSettings'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabel } from '../../utils/termLabel'
+import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 
 type LessonLike = {
+  assignmentKey?: string
   name?: string
   teacher?: string
   teacherId?: string
   courseId?: string
+  courseIds?: string[]
+  teacherNames?: string[]
+  isOddEven?: boolean
+  oddCourseId?: string
+  evenCourseId?: string
+  oddCourseName?: string
+  evenCourseName?: string
 }
 
 type TimetableRow = {
@@ -44,6 +52,7 @@ type TimetableRow = {
 }
 
 const timetableType = ref('班级课表')
+const timetableReady = ref(false)
 const timetableTypes = ['班级课表', '教师课表', '课程课表', '学校课表']
 const schoolLayout = ref<'horizontal' | 'vertical'>('horizontal')
 
@@ -52,9 +61,9 @@ const exportLayout = ref<'periodLeft' | 'weekLeft'>('periodLeft')
 const exportDialogVisible = ref(false)
 const optionSettings = reactive({
   schoolYear: true,
+  campus: true,
   teachingCycle: true,
   headTeacher: true,
-  breakTime: true,
   noonBreak: true,
   teacher: true,
   periodTime: true,
@@ -69,6 +78,7 @@ const courses = ref<CourseItem[]>([])
 const classHourRows = ref<ClassHourRow[]>([])
 const classHourClassRows = ref<ClassHourClassRow[]>([])
 const teacherRecords = ref<TeacherRecord[]>([])
+const teachingCycles = ref<TeachingCycle[]>([])
 const globalFixedPoints = ref<GlobalFixedPointRecord[]>(loadRuleSettingsSnapshot().globalFixedPoints || [])
 const selectedClassId = ref('')
 const selectedTeacherId = ref('')
@@ -76,15 +86,30 @@ const selectedCourseId = ref('')
 const selectedCampusId = ref('')
 const ALL_GRADE_VALUE = '__all__'
 const selectedGrade = ref(ALL_GRADE_VALUE)
+const selectedWeekNumber = ref(0)
 const selectedTerm = ref('当前学期')
 const currentPlanId = ref('default')
-const planKeyword = ref('')
 const schedulePlans = ref<SchedulePlan[]>([])
 const workbenchPersistState = ref<WorkbenchPersistSnapshot>({ entries: {}, meta: {}, drafts: {}, logs: {} })
 const scheduleEntries = ref<Record<string, unknown>>({})
 const publishedAt = ref(0)
 
 const allDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const gradeOrderMap: Record<string, number> = {
+  一年级: 1,
+  二年级: 2,
+  三年级: 3,
+  四年级: 4,
+  五年级: 5,
+  六年级: 6,
+  七年级: 7,
+  八年级: 8,
+  九年级: 9
+}
+
+function compareGradeLabels(a: string, b: string): number {
+  return (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999) || a.localeCompare(b, 'zh-CN', { numeric: true })
+}
 
 function formatDateTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return '--'
@@ -98,11 +123,95 @@ function formatDateTime(ts: number): string {
 }
 
 const selectedTermLabel = computed(() => formatSchoolTermLabel(selectedTerm.value))
+const activeTeachingCycle = computed(() => teachingCycles.value[0] || null)
+
+function parseTeachingCycleDateRange(value: string): { startDate: string; endDate: string } | null {
+  const [startDate = '', endDate = ''] = String(value || '')
+    .split('至')
+    .map((item) => item.trim())
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return null
+  return { startDate, endDate }
+}
+
+function calculateTeachingWeekCount(startDate: string, endDate: string): number {
+  const [startYear, startMonth, startDay] = startDate.split('-').map(Number)
+  const [endYear, endMonth, endDay] = endDate.split('-').map(Number)
+  const startTime = Date.UTC(startYear, startMonth - 1, startDay)
+  const endTime = Date.UTC(endYear, endMonth - 1, endDay)
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) return 0
+  const inclusiveDays = Math.floor((endTime - startTime) / 86400000) + 1
+  return Math.max(1, Math.ceil(inclusiveDays / 7))
+}
+
+function formatCycleDate(value: string): string {
+  return value.replaceAll('-', '.')
+}
+
+const teachingCycleDetails = computed(() => {
+  const cycle = activeTeachingCycle.value
+  const range = parseTeachingCycleDateRange(cycle?.dateRange || '')
+  if (!range) return null
+  const weekCount = calculateTeachingWeekCount(range.startDate, range.endDate)
+  if (!weekCount) return null
+  return {
+    ...range,
+    weekCount,
+    weekRange: `1-${weekCount}`
+  }
+})
+
+const teachingWeekOptions = computed(() => {
+  const count = teachingCycleDetails.value?.weekCount || 0
+  return Array.from({ length: count }, (_, index) => index + 1)
+})
+
+const selectedTeachingWeekDetails = computed(() => {
+  const cycle = teachingCycleDetails.value
+  const weekNumber = selectedWeekNumber.value
+  if (!cycle || weekNumber <= 0 || weekNumber > cycle.weekCount) return null
+  const [startYear, startMonth, startDay] = cycle.startDate.split('-').map(Number)
+  const cycleStartTime = Date.UTC(startYear, startMonth - 1, startDay)
+  const cycleEndTime = Date.parse(`${cycle.endDate}T00:00:00Z`)
+  const weekStartTime = cycleStartTime + (weekNumber - 1) * 7 * 86400000
+  const weekEndTime = Math.min(weekStartTime + 6 * 86400000, cycleEndTime)
+  const formatUtcDate = (time: number) => {
+    const date = new Date(time)
+    return `${date.getUTCFullYear()}.${String(date.getUTCMonth() + 1).padStart(2, '0')}.${String(date.getUTCDate()).padStart(2, '0')}`
+  }
+  return {
+    weekNumber,
+    startDate: formatUtcDate(weekStartTime),
+    endDate: formatUtcDate(weekEndTime)
+  }
+})
+
+const selectedWeekLabel = computed(() =>
+  selectedWeekNumber.value > 0 ? `第${selectedWeekNumber.value}周` : ''
+)
+
+const teachingCycleDisplayText = computed(() => {
+  const selectedWeek = selectedTeachingWeekDetails.value
+  if (selectedWeek) {
+    return `教学周次：第${selectedWeek.weekNumber}周（${selectedWeek.startDate}—${selectedWeek.endDate}）`
+  }
+  const cycle = teachingCycleDetails.value
+  if (!cycle) return ''
+  return `教学周次：第1—${cycle.weekCount}周（${formatCycleDate(cycle.startDate)}—${formatCycleDate(cycle.endDate)}，共${cycle.weekCount}周）`
+})
+
+const teachingCycleExportText = computed(() =>
+  optionSettings.teachingCycle
+    ? selectedTeachingWeekDetails.value
+      ? `教学周次：第${selectedTeachingWeekDetails.value.weekNumber}周（${selectedTeachingWeekDetails.value.startDate}—${selectedTeachingWeekDetails.value.endDate}）`
+      : teachingCycleDetails.value
+        ? `教学周次：1-${teachingCycleDetails.value.weekCount}周（共${teachingCycleDetails.value.weekCount}周）`
+        : ''
+    : ''
+)
 const schedulePlanNameById = computed(
   () => new Map(schedulePlans.value.map((item) => [item.id, item.name || item.id] as const))
 )
 const publishedPlanOptions = computed(() => {
-  const keyword = planKeyword.value.trim().toLowerCase()
   return Object.entries(workbenchPersistState.value.meta || {})
     .map(([id, meta]) => ({
       id,
@@ -110,7 +219,6 @@ const publishedPlanOptions = computed(() => {
       label: `${schedulePlanNameById.value.get(id) || id}（${formatDateTime(Number(meta?.publishedAt || 0))}）`
     }))
     .filter((item) => item.publishedAt > 0)
-    .filter((item) => (keyword ? item.label.toLowerCase().includes(keyword) : true))
     .sort((a, b) => b.publishedAt - a.publishedAt)
 })
 
@@ -142,7 +250,7 @@ const gradeOptions = computed(() => {
     .forEach((item) => {
       if (item.grade) set.add(item.grade)
     })
-  return Array.from(set)
+  return Array.from(set).sort(compareGradeLabels)
 })
 
 const activeClassId = computed(() => {
@@ -155,14 +263,50 @@ const activeTeacher = computed(() => teacherRecords.value.find((item) => item.id
 const activeCourse = computed(() => courses.value.find((item) => item.id === selectedCourseId.value) || null)
 const classById = computed(() => new Map(classRecords.value.map((item) => [item.id, item] as const)))
 
-function formatClassDisplayName(classItem: ClassRecord | null | undefined): string {
+function formatClassDisplayName(
+  classItem: Pick<ClassRecord, 'grade' | 'className'> | null | undefined
+): string {
   if (!classItem) return ''
   const grade = String(classItem.grade || '').trim()
   const className = String(classItem.className || '').trim()
   if (!grade) return className
   if (!className) return grade
-  return `${grade} | ${className}`
+  if (className.includes(grade)) return className
+  return `${grade} · ${className}`
 }
+
+function formatClassNameOnly(
+  classItem: Pick<ClassRecord, 'grade' | 'className'> | null | undefined
+): string {
+  if (!classItem) return ''
+  const grade = String(classItem.grade || '').trim()
+  const className = String(classItem.className || '').trim()
+  if (!grade || !className.startsWith(grade)) return className
+  return className.slice(grade.length).replace(/^[\s·|/\\-]+/, '').trim() || className
+}
+
+const selectedCampusName = computed(() =>
+  String(campuses.value.find((item) => item.id === selectedCampusId.value)?.name || '').trim()
+)
+const selectedGradeLabel = computed(() =>
+  selectedGrade.value === ALL_GRADE_VALUE ? '全年级' : String(selectedGrade.value || '').trim()
+)
+const timetableTitleParts = computed(() => {
+  const parts: string[] = []
+  if (optionSettings.schoolYear && selectedTermLabel.value) parts.push(selectedTermLabel.value)
+  if (selectedWeekLabel.value) parts.push(selectedWeekLabel.value)
+  if (optionSettings.campus && selectedCampusName.value) parts.push(selectedCampusName.value)
+  if (timetableType.value === '学校课表') {
+    parts.push(selectedGradeLabel.value, '学校课表')
+  } else if (timetableType.value === '教师课表') {
+    parts.push(selectedGradeLabel.value, activeTeacher.value?.name || '请选择教师', '教师课表')
+  } else if (timetableType.value === '课程课表') {
+    parts.push(selectedGradeLabel.value, activeCourse.value?.name || '请选择课程', '课程课表')
+  } else {
+    parts.push(activeClass.value ? formatClassDisplayName(activeClass.value) : '请选择班级', '班级课表')
+  }
+  return parts.filter(Boolean)
+})
 
 const dayCount = computed(() => {
   if (!activeClass.value) return 5
@@ -272,7 +416,6 @@ const timetableRows = computed<TimetableRow[]>(() => {
 
 function shouldShowSpecialRow(row: TimetableRow): boolean {
   if (!row.isSpecial) return true
-  if (row.specialType === 'break') return optionSettings.breakTime
   if (row.specialType === 'noon') return optionSettings.noonBreak
   return true
 }
@@ -289,8 +432,6 @@ const activeScheduleMap = computed<Record<string, Record<string, LessonLike | nu
 
 const teacherNameById = computed(() => new Map(teacherRecords.value.map((item) => [item.id, item.name] as const)))
 const campusNameById = computed(() => new Map(campuses.value.map((item) => [item.id, item.name] as const)))
-const classNameById = computed(() => new Map(classRecords.value.map((item) => [item.id, item.className] as const)))
-
 const teacherRows = computed(() => {
   return teacherRecords.value
     .filter((item) => (selectedCampusId.value ? item.campusId === selectedCampusId.value : true))
@@ -318,12 +459,36 @@ const schoolPeriods = computed(() =>
   Array.from({ length: schoolTotalLessons.value }).map((_, index) => ({ period: index + 1, label: String(index + 1) }))
 )
 const schoolRows = computed(() =>
-  classRows.value.map((item) => ({
-    classId: item.id,
-    className: item.className,
-    headTeacherName: String(teacherNameById.value.get(String(item.headTeacherId || '')) || '')
-  }))
+  classRows.value
+    .map((item) => ({
+      classId: item.id,
+      campusId: item.campusId,
+      grade: item.grade,
+      classNo: item.classNo,
+      className: item.className,
+      headTeacherName: String(teacherNameById.value.get(String(item.headTeacherId || '')) || '')
+    }))
+    .sort(
+      (a, b) =>
+        compareGradeLabels(a.grade, b.grade) ||
+        a.classNo - b.classNo ||
+        a.className.localeCompare(b.className, 'zh-CN', { numeric: true })
+    )
 )
+
+const schoolGradeGroups = computed(() => {
+  const groups: Array<{ grade: string; classes: (typeof schoolRows.value)[number][] }> = []
+  schoolRows.value.forEach((row) => {
+    const grade = String(row.grade || '未分年级')
+    const lastGroup = groups[groups.length - 1]
+    if (lastGroup?.grade === grade) {
+      lastGroup.classes.push(row)
+      return
+    }
+    groups.push({ grade, classes: [row] })
+  })
+  return groups
+})
 
 type SchoolVerticalRow = {
   key: string
@@ -378,6 +543,8 @@ const courseByName = computed(() => {
   })
   return map
 })
+
+const courseById = computed(() => new Map(courses.value.map((item) => [item.id, item] as const)))
 
 function getFixedActivities(
   source: Pick<ClassHourRow, 'fixedActivities' | 'morningStudy' | 'eveningStudy' | 'breakSlot'> | undefined,
@@ -456,7 +623,7 @@ function buildClassTimetableRows(classItem: ClassRecord): TimetableRow[] {
         specialType: 'noon'
       })
     }
-    if (optionSettings.breakTime && breakAfter > 0 && period === breakAfter) {
+    if (breakAfter > 0 && period === breakAfter) {
       rows.push({
         key: `break-${period}`,
         label: '课间操',
@@ -473,7 +640,8 @@ function buildClassTimetableRows(classItem: ClassRecord): TimetableRow[] {
 }
 
 function classLessonText(classItem: ClassRecord, period: number, day: string, includeTeacher = optionSettings.teacher): string {
-  const lesson = activeScheduleMap.value[classItem.id]?.[slotKey(period, day)]
+  const sourceLesson = activeScheduleMap.value[classItem.id]?.[slotKey(period, day)]
+  const lesson = resolveLessonForSelectedWeek(sourceLesson)
   if (!lesson) return ''
   const rawName = String(lesson.name || '').trim()
   const course = courseByName.value.get(rawName)
@@ -483,6 +651,44 @@ function classLessonText(classItem: ClassRecord, period: number, day: string, in
       : rawName
   const teacher = includeTeacher ? String(lesson.teacher || '').trim() : ''
   return [name, teacher].filter(Boolean).join('\n')
+}
+
+function resolveLessonForSelectedWeek(lesson: LessonLike | null | undefined): LessonLike | null {
+  if (!lesson) return null
+  const weekNumber = selectedWeekNumber.value
+  const assignmentKey = String(lesson.assignmentKey || '')
+  const pairedCourseIds = assignmentKey.startsWith('oe:')
+    ? assignmentKey.slice(3).split('|').map((item) => item.trim()).filter(Boolean)
+    : Array.isArray(lesson.courseIds)
+      ? lesson.courseIds.filter(Boolean)
+      : []
+  const isOddEven = Boolean(
+    lesson.isOddEven ||
+    lesson.oddCourseId ||
+    lesson.evenCourseId ||
+    assignmentKey.startsWith('oe:')
+  )
+  if (weekNumber <= 0 || !isOddEven) return lesson
+  const useOddCourse = weekNumber % 2 === 1
+  const teacherNames = Array.isArray(lesson.teacherNames) ? lesson.teacherNames : []
+  const fallbackTeacherNames = String(lesson.teacher || '')
+    .split('/')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const courseIndex = useOddCourse ? 0 : 1
+  const resolvedCourseId =
+    (useOddCourse ? lesson.oddCourseId : lesson.evenCourseId) || pairedCourseIds[courseIndex] || lesson.courseIds?.[courseIndex]
+  const resolvedCourseName =
+    (useOddCourse ? lesson.oddCourseName : lesson.evenCourseName) ||
+    String(courseById.value.get(String(resolvedCourseId || ''))?.name || '')
+  const resolvedTeacher = teacherNames[useOddCourse ? 0 : 1] || fallbackTeacherNames[useOddCourse ? 0 : 1] || ''
+  return {
+    ...lesson,
+    courseId: resolvedCourseId || lesson.courseId,
+    name: resolvedCourseName || String(lesson.name || '').split('/')[courseIndex] || lesson.name,
+    teacher: resolvedTeacher || lesson.teacher,
+    isOddEven: false
+  }
 }
 
 function classFixedPointText(classItem: ClassRecord, period: number, day: string): string {
@@ -554,12 +760,28 @@ function schoolVerticalSpanMethod({
   return [0, 0]
 }
 
+function schoolHorizontalSpanMethod({
+  rowIndex,
+  columnIndex
+}: {
+  rowIndex: number
+  columnIndex: number
+}): [number, number] {
+  if (columnIndex !== 0) return [1, 1]
+  const currentGrade = schoolRows.value[rowIndex]?.grade
+  if (rowIndex > 0 && schoolRows.value[rowIndex - 1]?.grade === currentGrade) return [0, 0]
+  let rowspan = 1
+  while (schoolRows.value[rowIndex + rowspan]?.grade === currentGrade) rowspan += 1
+  return [rowspan, 1]
+}
+
 function isTeacherHit(lesson: LessonLike | null | undefined): boolean {
-  if (!lesson || !activeTeacher.value) return false
+  const resolvedLesson = resolveLessonForSelectedWeek(lesson)
+  if (!resolvedLesson || !activeTeacher.value) return false
   const targetId = String(activeTeacher.value.id || '').trim()
   const targetName = String(activeTeacher.value.name || '').trim()
-  const lessonTeacherId = String(lesson.teacherId || '').trim()
-  const lessonTeacherName = String(lesson.teacher || '').trim()
+  const lessonTeacherId = String(resolvedLesson.teacherId || '').trim()
+  const lessonTeacherName = String(resolvedLesson.teacher || '').trim()
   if (targetId && lessonTeacherId && targetId === lessonTeacherId) return true
   return Boolean(targetName) && lessonTeacherName === targetName
 }
@@ -569,9 +791,9 @@ function teacherLessonText(period: number, day: string): string {
   const key = slotKey(period, day)
   const blocks: string[] = []
   classRows.value.forEach((classItem) => {
-    const lesson = activeScheduleMap.value[classItem.id]?.[key]
+    const lesson = resolveLessonForSelectedWeek(activeScheduleMap.value[classItem.id]?.[key])
     if (!isTeacherHit(lesson)) return
-    const className = String(classNameById.value.get(classItem.id) || classItem.className || '')
+    const className = formatClassDisplayName(classItem)
     const rawName = String(lesson?.name || '').trim()
     const course = courseByName.value.get(rawName)
     const courseName =
@@ -584,12 +806,13 @@ function teacherLessonText(period: number, day: string): string {
 }
 
 function isCourseHit(lesson: LessonLike | null | undefined): boolean {
-  if (!lesson || !activeCourse.value) return false
+  const resolvedLesson = resolveLessonForSelectedWeek(lesson)
+  if (!resolvedLesson || !activeCourse.value) return false
   const targetId = String(activeCourse.value.id || '').trim()
   const targetName = String(activeCourse.value.name || '').trim()
   const targetShort = String(activeCourse.value.shortName || '').trim()
-  const lessonCourseId = String(lesson.courseId || '').trim()
-  const lessonName = String(lesson.name || '').trim()
+  const lessonCourseId = String(resolvedLesson.courseId || '').trim()
+  const lessonName = String(resolvedLesson.name || '').trim()
   if (targetId && lessonCourseId && targetId === lessonCourseId) return true
   if (targetName && lessonName === targetName) return true
   return Boolean(targetShort) && lessonName === targetShort
@@ -600,11 +823,11 @@ function courseLessonText(period: number, day: string): string {
   const key = slotKey(period, day)
   const blocks: string[] = []
   classRows.value.forEach((classItem) => {
-    const lesson = activeScheduleMap.value[classItem.id]?.[key]
+    const lesson = resolveLessonForSelectedWeek(activeScheduleMap.value[classItem.id]?.[key])
     if (!isCourseHit(lesson)) return
     const teacherName = optionSettings.teacher ? String(lesson?.teacher || '').trim() : ''
-    const className = String(classNameById.value.get(classItem.id) || classItem.className || '')
-    blocks.push([teacherName, className].filter(Boolean).join('\n'))
+    const className = formatClassDisplayName(classItem)
+    blocks.push([className, teacherName].filter(Boolean).join('\n'))
   })
   return blocks.join('\n\n')
 }
@@ -660,7 +883,13 @@ function buildLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, exp
     const exportDays = allDays.slice(0, config.weeklyDays)
     const titleParts: string[] = []
     if (optionSettings.schoolYear && selectedTerm.value) titleParts.push(selectedTerm.value)
+    if (selectedWeekLabel.value) titleParts.push(selectedWeekLabel.value)
+    if (optionSettings.campus) {
+      const classCampusName = String(campusNameById.value.get(classItem.campusId) || '').trim()
+      if (classCampusName) titleParts.push(classCampusName)
+    }
     titleParts.push(formatClassDisplayName(classItem), '课表')
+    if (teachingCycleExportText.value) titleParts.push(teachingCycleExportText.value)
     const headTeacherName =
       optionSettings.headTeacher && classItem.headTeacherId ? String(teacherNameById.value.get(classItem.headTeacherId) || '') : ''
     const title = `${titleParts.filter(Boolean).join(' ')}${optionSettings.headTeacher ? `    班主任:${headTeacherName}` : ''}`.trim()
@@ -701,7 +930,16 @@ function buildGradeLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string
   const totalCols = 1 + dayCountOfSheet * totalLessonsOfSheet
   ws.columns = [{ width: 12 }, ...new Array(totalCols - 1).fill(null).map(() => ({ width: 13.5 }))]
   const exportDays = allDays.slice(0, dayCountOfSheet)
-  const title = [optionSettings.schoolYear ? selectedTerm.value : '', campusName, grade, '课表'].filter(Boolean).join(' ')
+  const title = [
+    optionSettings.schoolYear ? selectedTerm.value : '',
+    selectedWeekLabel.value,
+    optionSettings.campus ? campusName : '',
+    grade,
+    '课表',
+    teachingCycleExportText.value
+  ]
+    .filter(Boolean)
+    .join(' ')
   const row1 = ws.addRow([title])
   ws.mergeCells(row1.number, 1, row1.number, totalCols)
   row1.height = 25
@@ -760,11 +998,19 @@ function buildGradeLargeSheetExcel(workbook: ExcelJS.Workbook, sheetName: string
   })
 }
 
-function buildSmallSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, exportClasses: ClassRecord[]): void {
+function buildSmallSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, exportClasses: ClassRecord[], campusName: string): void {
   const ws = workbook.addWorksheet(sheetName.slice(0, 31))
   ws.columns = [{ width: 5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }, { width: 3.8 }, { width: 5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }, { width: 9.5 }]
   const defaultDays = allDays.slice(0, 5)
-  const title = [optionSettings.schoolYear ? selectedTerm.value : '', '课表'].filter(Boolean).join(' ')
+  const title = [
+    optionSettings.schoolYear ? selectedTerm.value : '',
+    selectedWeekLabel.value,
+    optionSettings.campus ? campusName : '',
+    '课表',
+    teachingCycleExportText.value
+  ]
+    .filter(Boolean)
+    .join(' ')
   for (let index = 0; index < exportClasses.length; index += 2) {
     const left = exportClasses[index]
     const right = exportClasses[index + 1] || null
@@ -820,48 +1066,67 @@ function buildSmallSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, exp
 
 function buildSchoolHorizontalSheetExcel(workbook: ExcelJS.Workbook, sheetName: string, campusName: string, gradeName: string): void {
   const ws = workbook.addWorksheet(sheetName.slice(0, 31))
-  const totalCols = 2 + schoolDayCount.value * schoolTotalLessons.value
-  ws.columns = [{ width: 16 }, { width: 11 }, ...new Array(totalCols - 2).fill(null).map(() => ({ width: 12 }))]
-  const title = [optionSettings.schoolYear ? selectedTerm.value : '', `${campusName}-${gradeName}`, '学校课表'].filter(Boolean).join(' ')
+  const totalCols = 3 + schoolDayCount.value * schoolTotalLessons.value
+  ws.columns = [{ width: 11 }, { width: 10 }, { width: 11 }, ...new Array(totalCols - 3).fill(null).map(() => ({ width: 12 }))]
+  const title = [
+    optionSettings.schoolYear ? selectedTerm.value : '',
+    selectedWeekLabel.value,
+    optionSettings.campus ? campusName : '',
+    gradeName,
+    '学校课表',
+    teachingCycleExportText.value
+  ]
+    .filter(Boolean)
+    .join(' ')
   const row1 = ws.addRow([title])
   ws.mergeCells(row1.number, 1, row1.number, totalCols)
   row1.height = 25
   styleRowCells(row1, 1, totalCols, { bold: true, align: 'left', fontSize: 11.5 })
 
-  const row2 = ws.addRow(['星期', '班主任', ...new Array(totalCols - 2).fill('')])
+  const row2 = ws.addRow(['年级', '班级', '班主任', ...new Array(totalCols - 3).fill('')])
   row2.height = 24
   styleRowCells(row2, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
   schoolDays.value.forEach((day, dayIndex) => {
-    const startCol = 3 + dayIndex * schoolTotalLessons.value
+    const startCol = 4 + dayIndex * schoolTotalLessons.value
     const endCol = startCol + schoolTotalLessons.value - 1
     ws.mergeCells(row2.number, startCol, row2.number, endCol)
     row2.getCell(startCol).value = day
     styleCell(row2.getCell(startCol), { bold: true, fill: 'FFEEF3FD' })
   })
 
-  const row3 = ws.addRow(['节次', '', ...schoolPeriods.value.map((item) => item.label).flatMap((value) => new Array(1).fill(value))])
   const expandedPeriods: string[] = []
   schoolDays.value.forEach(() => schoolPeriods.value.forEach((p) => expandedPeriods.push(p.label)))
-  row3.values = [undefined, '节次', '', ...expandedPeriods]
+  const row3 = ws.addRow(['', '', '', ...expandedPeriods])
   row3.height = 24
   styleRowCells(row3, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
+  for (let column = 1; column <= 3; column += 1) {
+    ws.mergeCells(row2.number, column, row3.number, column)
+  }
 
-  schoolRows.value.forEach((row) => {
-    const cells: string[] = []
-    schoolDays.value.forEach((day) => {
-      schoolPeriods.value.forEach((period) => {
-        cells.push(schoolCellText(row.classId, day, period.period))
+  schoolGradeGroups.value.forEach((group) => {
+    const gradeStartRow = ws.rowCount + 1
+    group.classes.forEach((row) => {
+      const cells: string[] = []
+      schoolDays.value.forEach((day) => {
+        schoolPeriods.value.forEach((period) => {
+          cells.push(schoolCellText(row.classId, day, period.period))
+        })
       })
+      const classLabel = formatClassNameOnly(row)
+      const dataRow = ws.addRow([row.grade, classLabel, row.headTeacherName, ...cells])
+      const maxLines = Math.max(
+        1,
+        ...cells.map((item) => Math.max(1, String(item || '').split('\n').length)),
+        Math.max(1, String(classLabel || '').split('\n').length)
+      )
+      dataRow.height = Math.max(24, maxLines * 16)
+      styleRowCells(dataRow, 1, totalCols)
     })
-    const classLabel = formatClassDisplayName(row)
-    const dataRow = ws.addRow([classLabel, row.headTeacherName, ...cells])
-    const maxLines = Math.max(
-      1,
-      ...cells.map((item) => Math.max(1, String(item || '').split('\n').length)),
-      Math.max(1, String(classLabel || '').split('\n').length)
-    )
-    dataRow.height = Math.max(24, maxLines * 16)
-    styleRowCells(dataRow, 1, totalCols)
+    const gradeEndRow = ws.rowCount
+    if (gradeEndRow > gradeStartRow) {
+      ws.mergeCells(gradeStartRow, 1, gradeEndRow, 1)
+    }
+    styleCell(ws.getCell(gradeStartRow, 1), { bold: true, fill: 'FFF6F9FF' })
   })
 }
 
@@ -869,19 +1134,44 @@ function buildSchoolVerticalSheetExcel(workbook: ExcelJS.Workbook, sheetName: st
   const ws = workbook.addWorksheet(sheetName.slice(0, 31))
   const totalCols = 2 + schoolRows.value.length
   ws.columns = [{ width: 10 }, { width: 8 }, ...new Array(totalCols - 2).fill(null).map(() => ({ width: 13 }))]
-  const title = [optionSettings.schoolYear ? selectedTerm.value : '', `${campusName}-${gradeName}`, '学校课表'].filter(Boolean).join(' ')
+  const title = [
+    optionSettings.schoolYear ? selectedTerm.value : '',
+    selectedWeekLabel.value,
+    optionSettings.campus ? campusName : '',
+    gradeName,
+    '学校课表',
+    teachingCycleExportText.value
+  ]
+    .filter(Boolean)
+    .join(' ')
   const row1 = ws.addRow([title])
   ws.mergeCells(row1.number, 1, row1.number, totalCols)
   row1.height = 25
   styleRowCells(row1, 1, totalCols, { bold: true, align: 'left', fontSize: 11.5 })
 
-  const row2 = ws.addRow(['周次', '节次', ...schoolRows.value.map((item) => formatClassDisplayName(item))])
+  const row2 = ws.addRow(['周次', '节次', ...schoolRows.value.map(() => '')])
   row2.height = 24
   styleRowCells(row2, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
+  let gradeStartColumn = 3
+  schoolGradeGroups.value.forEach((group) => {
+    const gradeEndColumn = gradeStartColumn + group.classes.length - 1
+    row2.getCell(gradeStartColumn).value = group.grade
+    if (gradeEndColumn > gradeStartColumn) {
+      ws.mergeCells(row2.number, gradeStartColumn, row2.number, gradeEndColumn)
+    }
+    styleCell(row2.getCell(gradeStartColumn), { bold: true, fill: 'FFEEF3FD' })
+    gradeStartColumn = gradeEndColumn + 1
+  })
 
-  const row3 = ws.addRow(['班主任', '', ...schoolRows.value.map((item) => item.headTeacherName)])
+  const row3 = ws.addRow(['', '', ...schoolRows.value.map((item) => formatClassNameOnly(item))])
   row3.height = 24
-  styleRowCells(row3, 1, totalCols, { bold: true, fill: 'FFF6F9FF' })
+  styleRowCells(row3, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
+  ws.mergeCells(row2.number, 1, row3.number, 1)
+  ws.mergeCells(row2.number, 2, row3.number, 2)
+
+  const row4 = ws.addRow(['班主任', '', ...schoolRows.value.map((item) => item.headTeacherName)])
+  row4.height = 24
+  styleRowCells(row4, 1, totalCols, { bold: true, fill: 'FFF6F9FF' })
 
   schoolDays.value.forEach((day) => {
     const startRow = ws.rowCount + 1
@@ -893,6 +1183,36 @@ function buildSchoolVerticalSheetExcel(workbook: ExcelJS.Workbook, sheetName: st
       styleRowCells(row, 1, totalCols)
     })
     ws.mergeCells(startRow, 1, startRow + schoolPeriods.value.length - 1, 1)
+  })
+}
+
+function buildFocusedTimetableSheetExcel(workbook: ExcelJS.Workbook, sheetName: string): void {
+  const ws = workbook.addWorksheet(sheetName.slice(0, 31))
+  const totalCols = days.value.length + 1
+  ws.columns = [{ width: 8 }, ...days.value.map(() => ({ width: 20 }))]
+
+  const titleRow = ws.addRow([timetableTitleParts.value.join(' ')])
+  ws.mergeCells(titleRow.number, 1, titleRow.number, totalCols)
+  titleRow.height = 26
+  styleRowCells(titleRow, 1, totalCols, { bold: true, align: 'left', fontSize: 11.5 })
+
+  const headerRow = ws.addRow(['节次', ...days.value])
+  headerRow.height = 25
+  styleRowCells(headerRow, 1, totalCols, { bold: true, fill: 'FFEEF3FD' })
+
+  displayedTimetableRows.value.forEach((row) => {
+    if (row.isSpecial) {
+      const specialRow = ws.addRow([row.label])
+      ws.mergeCells(specialRow.number, 1, specialRow.number, totalCols)
+      specialRow.height = 25
+      styleRowCells(specialRow, 1, totalCols, { bold: true, fill: 'FFF6F9FF' })
+      return
+    }
+    const cells = days.value.map((day) => rowLessonText(row, day))
+    const lessonRow = ws.addRow([optionSettings.periodTime ? row.label : '', ...cells])
+    const maxLines = Math.max(1, ...cells.map((item) => Math.max(1, String(item || '').split('\n').length)))
+    lessonRow.height = Math.max(32, maxLines * 17)
+    styleRowCells(lessonRow, 1, totalCols)
   })
 }
 
@@ -909,6 +1229,14 @@ async function exportAs(type: 'excel' | 'pdf'): Promise<void> {
     notify.warning('暂无已生成课表，请先在排课管理生成课表。')
     return
   }
+  if (timetableType.value === '教师课表' && !activeTeacher.value) {
+    notify.warning('请先选择要导出的教师。')
+    return
+  }
+  if (timetableType.value === '课程课表' && !activeCourse.value) {
+    notify.warning('请先选择要导出的课程。')
+    return
+  }
   const exportClasses = classRows.value
   if (!exportClasses.length) {
     notify.warning('当前筛选下没有班级可导出。')
@@ -919,7 +1247,13 @@ async function exportAs(type: 'excel' | 'pdf'): Promise<void> {
   const campusName = String(campusNameById.value.get(selectedCampusId.value) || '本校区')
   const selectedGradeName = selectedGrade.value === ALL_GRADE_VALUE ? '全年级' : String(selectedGrade.value || '全年级')
 
-  if (timetableType.value === '学校课表') {
+  if (timetableType.value === '教师课表' || timetableType.value === '课程课表') {
+    const entityName = timetableType.value === '教师课表' ? activeTeacher.value?.name || '未选教师' : activeCourse.value?.name || '未选课程'
+    buildFocusedTimetableSheetExcel(
+      workbook,
+      `${campusName}-${selectedGradeName}-${entityName}-${timetableType.value}`
+    )
+  } else if (timetableType.value === '学校课表') {
     if (schoolLayout.value === 'vertical') {
       buildSchoolVerticalSheetExcel(workbook, `${campusName}-${selectedGradeName}-学校课表-竖版`, campusName, selectedGradeName)
     } else {
@@ -934,22 +1268,27 @@ async function exportAs(type: 'excel' | 'pdf'): Promise<void> {
     })
     Array.from(gradeMap.entries()).forEach(([grade, rowsOfGrade]) => buildGradeLargeSheetExcel(workbook, `${campusName}-${grade}`, rowsOfGrade, campusName, grade))
   } else if (timetableSize.value === 'small') {
-    buildSmallSheetExcel(workbook, `${campusName}-${selectedGradeName}`, exportClasses)
+    buildSmallSheetExcel(workbook, `${campusName}-${selectedGradeName}`, exportClasses, campusName)
   } else {
     const maxDays = Math.max(...exportClasses.map((item) => getClassHourConfig(item).weeklyDays), 5)
     buildLargeSheetExcel(workbook, `${campusName}-${selectedGradeName}`, exportClasses, maxDays)
   }
 
+  const weekFilenamePart = selectedWeekLabel.value ? `-${selectedWeekLabel.value}` : ''
   const filename =
-    timetableType.value === '学校课表'
+    timetableType.value === '教师课表'
+      ? `${campusName}-${selectedGradeName}${weekFilenamePart}-${activeTeacher.value?.name || '未选教师'}-教师课表.xlsx`
+      : timetableType.value === '课程课表'
+        ? `${campusName}-${selectedGradeName}${weekFilenamePart}-${activeCourse.value?.name || '未选课程'}-课程课表.xlsx`
+        : timetableType.value === '学校课表'
       ? schoolLayout.value === 'vertical'
-        ? `${campusName}-${selectedGradeName}-学校课表-竖版.xlsx`
-        : `${campusName}-${selectedGradeName}-学校课表-横版.xlsx`
+        ? `${campusName}-${selectedGradeName}${weekFilenamePart}-学校课表-竖版.xlsx`
+        : `${campusName}-${selectedGradeName}${weekFilenamePart}-学校课表-横版.xlsx`
       : timetableSize.value === 'gradeLarge'
-      ? `${campusName}-${selectedGradeName}-年级大课表-横版.xlsx`
-      : timetableSize.value === 'small'
-      ? `${campusName}-${selectedGradeName}-班级小课表-节次在左.xlsx`
-      : `${campusName}-${selectedGradeName}-班级大课表-节次在左.xlsx`
+        ? `${campusName}-${selectedGradeName}${weekFilenamePart}-年级大课表-横版.xlsx`
+        : timetableSize.value === 'small'
+          ? `${campusName}-${selectedGradeName}${weekFilenamePart}-班级小课表-节次在左.xlsx`
+          : `${campusName}-${selectedGradeName}${weekFilenamePart}-班级大课表-节次在左.xlsx`
   const buffer = await workbook.xlsx.writeBuffer()
   saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename)
   notify.success(`已导出：${filename}`)
@@ -961,6 +1300,7 @@ async function confirmExportExcel(): Promise<void> {
 }
 
 async function hydrate(): Promise<void> {
+  try {
   const loaded = await basicDataRepository.load()
   const parsed = loaded && typeof loaded === 'object' ? loaded : {}
   campuses.value = Array.isArray((parsed as { campuses?: unknown[] }).campuses)
@@ -981,6 +1321,9 @@ async function hydrate(): Promise<void> {
   teacherRecords.value = Array.isArray((parsed as { teacherRecords?: unknown[] }).teacherRecords)
     ? ((parsed as { teacherRecords: TeacherRecord[] }).teacherRecords || [])
     : []
+  teachingCycles.value = Array.isArray((parsed as { teachingCycles?: unknown[] }).teachingCycles)
+    ? ((parsed as { teachingCycles: TeachingCycle[] }).teachingCycles || [])
+    : []
   selectedTerm.value = String((parsed as { selectedTerm?: unknown }).selectedTerm || '当前学期')
 
   const first = classRecords.value[0]
@@ -993,7 +1336,10 @@ async function hydrate(): Promise<void> {
   schedulePlans.value = await loadSchedulePlans()
   const workbench = await loadWorkbenchPersistSnapshot()
   workbenchPersistState.value = workbench
-  scheduleEntries.value = (workbenchPersistState.value.entries || {}) as Record<string, unknown>
+  scheduleEntries.value = {
+    ...(workbenchPersistState.value.entries || {}),
+    ...(workbenchPersistState.value.publishedEntries || {})
+  } as Record<string, unknown>
   const metaList = Object.entries(workbenchPersistState.value.meta || {})
     .map(([id, meta]) => ({ id, publishedAt: Number(meta?.publishedAt || 0) }))
     .filter((item) => item.publishedAt > 0)
@@ -1002,6 +1348,9 @@ async function hydrate(): Promise<void> {
   currentPlanId.value = latest?.id || 'default'
   publishedAt.value = latest?.publishedAt || 0
   globalFixedPoints.value = (await hydrateRuleSettingsSnapshotFromApi()).globalFixedPoints || []
+  } finally {
+    timetableReady.value = true
+  }
 }
 
 void hydrate()
@@ -1035,6 +1384,16 @@ watch(
 )
 
 watch(
+  teachingWeekOptions,
+  (weeks) => {
+    if (selectedWeekNumber.value > 0 && !weeks.includes(selectedWeekNumber.value)) {
+      selectedWeekNumber.value = 0
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   () => currentPlanId.value,
   (planId) => {
     const published = Number(workbenchPersistState.value.meta?.[planId]?.publishedAt || 0)
@@ -1057,45 +1416,6 @@ watch(
   },
   { immediate: true }
 )
-
-async function removeCurrentTimetableData(): Promise<void> {
-  const targetPlanId = String(currentPlanId.value || '').trim()
-  if (!targetPlanId || !workbenchPersistState.value.meta?.[targetPlanId]) {
-    notify.warning('请先选择要删除的课表数据。')
-    return
-  }
-
-  try {
-    await ElMessageBox.confirm(
-      `确认删除课表数据「${schedulePlanNameById.value.get(targetPlanId) || targetPlanId}」吗？删除后无法恢复。`,
-      '删除课表数据',
-      {
-        type: 'warning',
-        confirmButtonText: '确认删除',
-        cancelButtonText: '取消'
-      }
-    )
-  } catch {
-    return
-  }
-
-  const next: WorkbenchPersistSnapshot = {
-    entries: { ...(workbenchPersistState.value.entries || {}) },
-    meta: { ...(workbenchPersistState.value.meta || {}) },
-    drafts: { ...(workbenchPersistState.value.drafts || {}) },
-    logs: { ...(workbenchPersistState.value.logs || {}) },
-    _savedAt: Date.now()
-  }
-  delete next.entries[targetPlanId]
-  delete next.meta[targetPlanId]
-  delete next.drafts[targetPlanId]
-  delete next.logs[targetPlanId]
-
-  await saveWorkbenchPersistSnapshot(next)
-  workbenchPersistState.value = next
-  scheduleEntries.value = (next.entries || {}) as Record<string, unknown>
-  notify.success('课表数据已删除。')
-}
 
 watch(
   classRows,
@@ -1145,7 +1465,8 @@ watch(
 </script>
 
 <template>
-  <article class="panel timetable-manage-panel">
+  <AppContentSkeleton v-if="!timetableReady" variant="table" />
+  <article v-else class="panel timetable-manage-panel">
     <header class="tm-topbar">
       <el-tabs v-model="timetableType" class="tm-type-tabs">
         <el-tab-pane v-for="item in timetableTypes" :key="item" :label="item" :name="item" />
@@ -1157,19 +1478,19 @@ watch(
     </header>
 
     <div class="tm-filterbar">
-      <el-input v-model="planKeyword" clearable placeholder="查询课表数据（方案名）" class="tm-filter-select" />
-      <el-select v-model="currentPlanId" filterable clearable placeholder="课表数据管理" class="tm-filter-select">
+      <el-select v-model="currentPlanId" filterable placeholder="选择排课方案" class="tm-filter-select">
         <el-option v-for="item in publishedPlanOptions" :key="item.id" :label="item.label" :value="item.id" />
       </el-select>
-      <el-button type="danger" plain :disabled="!currentPlanId || !publishedAt" @click="removeCurrentTimetableData">
-        删除课表
-      </el-button>
       <el-select v-model="selectedCampusId" placeholder="选择校区" class="tm-filter-select">
         <el-option v-for="item in campusOptions" :key="item.id" :label="item.name" :value="item.id" />
       </el-select>
       <el-select v-model="selectedGrade" placeholder="选择年级" class="tm-filter-select">
         <el-option label="全年级" :value="ALL_GRADE_VALUE" />
         <el-option v-for="item in gradeOptions" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select v-model="selectedWeekNumber" placeholder="选择周次" class="tm-filter-select tm-week-select">
+        <el-option label="全学期" :value="0" />
+        <el-option v-for="week in teachingWeekOptions" :key="week" :label="`第${week}周`" :value="week" />
       </el-select>
       <template v-if="timetableType === '教师课表'">
         <el-select
@@ -1204,7 +1525,7 @@ watch(
           clearable
           :reserve-keyword="false"
           default-first-option
-          placeholder="输入班级名称搜索"
+          placeholder="输入年级或班级搜索"
           class="tm-filter-select tm-filter-picker"
         >
           <el-option v-for="row in classRows" :key="row.id" :label="formatClassDisplayName(row)" :value="row.id" />
@@ -1219,13 +1540,13 @@ watch(
           <div class="tm-option-group">
             <div class="tm-option-title">课表</div>
             <div class="tm-option-inline">
-              <el-checkbox v-model="optionSettings.breakTime">课间操</el-checkbox>
               <el-checkbox v-model="optionSettings.noonBreak">午休</el-checkbox>
             </div>
           </div>
           <div class="tm-option-group">
             <div class="tm-option-title">内容</div>
             <el-checkbox v-model="optionSettings.schoolYear">学年学期</el-checkbox>
+            <el-checkbox v-model="optionSettings.campus">校区</el-checkbox>
             <el-checkbox v-model="optionSettings.teachingCycle">教学周期</el-checkbox>
             <el-checkbox v-model="optionSettings.headTeacher">班主任</el-checkbox>
             <el-checkbox v-model="optionSettings.teacher">教师</el-checkbox>
@@ -1239,25 +1560,14 @@ watch(
 
       <section class="tm-right tm-card">
         <div class="tm-schedule-head">
-          <h3 class="tm-schedule-title">
-            <span v-if="optionEnabled('schoolYear')" class="tm-title-part">{{ selectedTermLabel }}</span>
-            <template v-if="timetableType === '学校课表'">
-              <span class="tm-title-part">{{ selectedGrade === ALL_GRADE_VALUE ? '全年级' : selectedGrade }}</span>
-              <span class="tm-title-part">学校课表</span>
-            </template>
-            <template v-else-if="timetableType === '教师课表'">
-              <span class="tm-title-part">{{ activeTeacher?.name || '' }}</span>
-              <span class="tm-title-part">课表</span>
-            </template>
-            <template v-else-if="timetableType === '课程课表'">
-              <span class="tm-title-part">{{ activeCourse?.name || '' }}</span>
-              <span class="tm-title-part">课表</span>
-            </template>
-            <template v-else>
-              <span class="tm-title-part">{{ activeClass ? formatClassDisplayName(activeClass) : '请选择班级' }}</span>
-              <span class="tm-title-part">课表</span>
-            </template>
-          </h3>
+          <div class="tm-schedule-heading">
+            <h3 class="tm-schedule-title">
+              <span v-for="(part, index) in timetableTitleParts" :key="`${index}-${part}`" class="tm-title-part">{{ part }}</span>
+            </h3>
+            <p v-if="optionSettings.teachingCycle && teachingCycleDisplayText" class="tm-teaching-cycle-text">
+              {{ teachingCycleDisplayText }}
+            </p>
+          </div>
           <div v-if="timetableType === '班级课表' && optionEnabled('headTeacher') && activeHeadTeacherName" class="tm-head-teacher">
             班主任：{{ activeHeadTeacherName }}
           </div>
@@ -1265,8 +1575,8 @@ watch(
         <div v-if="timetableType === '学校课表'" class="tm-school-layout-switch">
           <span>版型：</span>
           <el-radio-group v-model="schoolLayout">
-            <el-radio label="horizontal">横版</el-radio>
-            <el-radio label="vertical">竖版</el-radio>
+            <el-radio value="horizontal">横版</el-radio>
+            <el-radio value="vertical">竖版</el-radio>
           </el-radio-group>
         </div>
         <p v-if="!publishedAt" class="tm-publish-tip">暂无已生成课表，请先在排课管理点击“生成课表”。</p>
@@ -1276,10 +1586,12 @@ watch(
           row-key="classId"
           border
           class="tm-table"
+          :span-method="schoolHorizontalSpanMethod"
         >
-          <el-table-column label="班级" width="160">
+          <el-table-column prop="grade" label="年级" width="108" />
+          <el-table-column label="班级" width="108">
             <template #default="{ row }">
-              {{ formatClassDisplayName(row) }}
+              {{ formatClassNameOnly(row) }}
             </template>
           </el-table-column>
           <el-table-column v-if="optionEnabled('headTeacher')" prop="headTeacherName" label="班主任" width="140" />
@@ -1308,12 +1620,19 @@ watch(
         >
           <el-table-column prop="day" label="周次" width="98" />
           <el-table-column prop="period" label="节次" width="84" />
-          <el-table-column v-for="row in schoolRows" :key="`v-${row.classId}`" :label="formatClassDisplayName(row)" min-width="148">
-            <template #default="{ row: dataRow }">
-              <div class="tm-lesson-cell">
-                <span>{{ schoolVerticalCellText(dataRow, row.classId) }}</span>
-              </div>
-            </template>
+          <el-table-column v-for="group in schoolGradeGroups" :key="`grade-${group.grade}`" :label="group.grade">
+            <el-table-column
+              v-for="classRow in group.classes"
+              :key="`v-${classRow.classId}`"
+              :label="formatClassNameOnly(classRow)"
+              min-width="148"
+            >
+              <template #default="{ row: dataRow }">
+                <div class="tm-lesson-cell">
+                  <span>{{ schoolVerticalCellText(dataRow, classRow.classId) }}</span>
+                </div>
+              </template>
+            </el-table-column>
           </el-table-column>
         </el-table>
         <el-table v-else :data="displayedTimetableRows" row-key="key" border class="tm-table" :span-method="timetableSpanMethod">
@@ -1343,26 +1662,26 @@ watch(
             <el-option v-for="item in gradeOptions" :key="`export-${item}`" :label="item" :value="item" />
           </el-select>
         </div>
-        <div v-if="timetableType !== '学校课表'" class="tm-option-inline">
+        <div v-if="timetableType === '班级课表'" class="tm-option-inline">
           <span>课表：</span>
           <el-radio-group v-model="timetableSize">
-            <el-radio label="gradeLarge">年级大课表</el-radio>
-            <el-radio label="large">大课表</el-radio>
-            <el-radio label="small">小课表</el-radio>
+            <el-radio value="gradeLarge">年级大课表</el-radio>
+            <el-radio value="large">大课表</el-radio>
+            <el-radio value="small">小课表</el-radio>
           </el-radio-group>
         </div>
-        <div v-if="timetableType !== '学校课表'" class="tm-option-inline">
+        <div v-if="timetableType === '班级课表'" class="tm-option-inline">
           <span>版型：</span>
           <el-radio-group v-model="exportLayout">
-            <el-radio label="periodLeft">节次在左</el-radio>
-            <el-radio label="weekLeft">星期在左</el-radio>
+            <el-radio value="periodLeft">节次在左</el-radio>
+            <el-radio value="weekLeft">星期在左</el-radio>
           </el-radio-group>
         </div>
         <div v-if="timetableType === '学校课表'" class="tm-option-inline">
           <span>学校课表版型：</span>
           <el-radio-group v-model="schoolLayout">
-            <el-radio label="horizontal">横版</el-radio>
-            <el-radio label="vertical">竖版</el-radio>
+            <el-radio value="horizontal">横版</el-radio>
+            <el-radio value="vertical">竖版</el-radio>
           </el-radio-group>
         </div>
       </div>

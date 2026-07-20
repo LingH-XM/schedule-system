@@ -7,6 +7,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue()],
     server: {
+      allowedHosts: ['class.suishichuma.com'],
       proxy: {
         '/api': {
           target: apiProxyTarget,

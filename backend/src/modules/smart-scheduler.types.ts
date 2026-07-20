@@ -8,11 +8,17 @@ export type SolverLesson = {
   teacherNames?: string[]
   color: string
   isCombined?: boolean
+  isOddEven?: boolean
+  oddCourseId?: string
+  evenCourseId?: string
+  oddCourseName?: string
+  evenCourseName?: string
   locked?: boolean
 }
 
 export type SolveDemand = {
   assignmentKey: string
+  sourceClassId?: string
   remaining: number
   targetClassIds: string[]
   lessonsByClass: Record<string, SolverLesson>
@@ -25,6 +31,13 @@ export type ConsecutiveConstraint = {
   courseIds: string[]
   weeklyConsecutiveCount: number
   preferredDays: string[]
+}
+
+export type CourseRelationConstraint = {
+  classId: string
+  courseAIds: string[]
+  courseBIds: string[]
+  relationType: '前后互斥' | '同天互斥'
 }
 
 export type SmartSolveRequest = {
@@ -87,9 +100,11 @@ export type SmartSolveRequest = {
     enableCourseDefault?: boolean
     enableMainSecondary?: boolean
     enableOddEven?: boolean
+    enableCourseRelation?: boolean
     consecutivePreferredWeight?: number
   }
   consecutiveConstraints?: ConsecutiveConstraint[]
+  courseRelationConstraints?: CourseRelationConstraint[]
   scheduleMap: Record<string, Record<string, SolverLesson | null>>
   demands: SolveDemand[]
 }

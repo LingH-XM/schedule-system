@@ -59,6 +59,7 @@ model Teacher {
   campusId            String
   subject             String
   subjectGroup        String
+  weeklyLessonRequirement Int                  @default(0)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]

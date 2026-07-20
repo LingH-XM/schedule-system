@@ -7,13 +7,21 @@ import BasicDataPage from '../views/admin/BasicDataPage.vue'
 import RuleSettingsPage from '../views/admin/RuleSettingsPage.vue'
 import SchedulesPage from '../views/admin/SchedulesPage.vue'
 import ScheduleWorkbenchPage from '../views/admin/ScheduleWorkbenchPage.vue'
+import TeacherHoursStatisticsPage from '../views/admin/TeacherHoursStatisticsPage.vue'
 import TimetableManagementPage from '../views/admin/TimetableManagementPage.vue'
+import HelpCenterPage from '../views/admin/HelpCenterPage.vue'
 import { getCurrentUser, hasRequiredRole, isAuthenticated } from '../services/auth'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
+    {
+      path: '/help/:page?',
+      name: 'helpCenter',
+      component: HelpCenterPage,
+      meta: { requiresAuth: true }
+    },
     {
       path: '/',
       component: AdminLayout,
@@ -25,6 +33,7 @@ const router = createRouter({
         { path: 'basic-data', name: 'basicData', component: BasicDataPage },
         { path: 'rule-settings', name: 'ruleSettings', component: RuleSettingsPage },
         { path: 'schedules', name: 'schedules', component: SchedulesPage },
+        { path: 'teacher-hours-statistics', name: 'teacherHoursStatistics', component: TeacherHoursStatisticsPage },
         { path: 'timetable-management', name: 'timetableManagement', component: TimetableManagementPage },
         { path: 'schedules/workbench', name: 'scheduleWorkbench', component: ScheduleWorkbenchPage }
       ]

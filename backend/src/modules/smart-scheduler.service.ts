@@ -25,6 +25,7 @@ export type OrtoolsErrorCode =
   | 'SYNC_START_POSTCHECK_DAY_COUNT'
   | 'SYNC_START_POSTCHECK_CONSECUTIVE'
   | 'CONSECUTIVE_EXISTING_CONFLICT'
+  | 'COURSE_RELATION_EXISTING_CONFLICT'
 
 export class OrtoolsSolveError extends Error {
   constructor(
@@ -340,6 +341,11 @@ export class SmartSchedulerService {
       teacherNames: Array.isArray(source?.teacherNames) ? [...source.teacherNames] : undefined,
       color: source?.color || '#5b8fd1',
       isCombined,
+      isOddEven: Boolean(source?.isOddEven),
+      oddCourseId: source?.oddCourseId,
+      evenCourseId: source?.evenCourseId,
+      oddCourseName: source?.oddCourseName,
+      evenCourseName: source?.evenCourseName,
       locked: false
     }
     return lesson

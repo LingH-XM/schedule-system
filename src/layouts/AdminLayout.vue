@@ -16,6 +16,7 @@ const navItems = [
   { label: '基础数据', to: '/basic-data' },
   { label: '排课规则设置', to: '/rule-settings' },
   { label: '排课管理', to: '/schedules' },
+  { label: '教师课时统计', to: '/teacher-hours-statistics' },
   { label: '课表管理', to: '/timetable-management' }
 ]
 
@@ -25,7 +26,10 @@ const visibleNavItems = computed(() =>
 )
 const SIDEBAR_COLLAPSE_KEY = 'admin_sidebar_collapsed_v1'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === '1')
+const isCompactScreen = ref(false)
+const mobileNavOpen = ref(false)
 const currentTermLabel = ref('未设置学期')
+let compactScreenMedia: MediaQueryList | null = null
 
 async function refreshCurrentTerm(): Promise<void> {
   const result = basicDataRepository.load()
@@ -38,12 +42,25 @@ function handleTermChanged(event: Event): void {
   currentTermLabel.value = formatSchoolTermLabel(String(term || '')) || '未设置学期'
 }
 
+function syncCompactScreen(event: MediaQueryList | MediaQueryListEvent): void {
+  isCompactScreen.value = event.matches
+  if (!event.matches) {
+    mobileNavOpen.value = false
+  }
+}
+
 onMounted(() => {
   void refreshCurrentTerm()
   window.addEventListener('schedule-term-changed', handleTermChanged)
+  compactScreenMedia = window.matchMedia('(max-width: 1366px)')
+  syncCompactScreen(compactScreenMedia)
+  compactScreenMedia.addEventListener('change', syncCompactScreen)
 })
 
-onBeforeUnmount(() => window.removeEventListener('schedule-term-changed', handleTermChanged))
+onBeforeUnmount(() => {
+  window.removeEventListener('schedule-term-changed', handleTermChanged)
+  compactScreenMedia?.removeEventListener('change', syncCompactScreen)
+})
 
 watch(
   sidebarCollapsed,
@@ -68,16 +85,44 @@ async function handleLogout(): Promise<void> {
 }
 
 function toggleSidebar(): void {
+  if (isCompactScreen.value) {
+    mobileNavOpen.value = !mobileNavOpen.value
+    return
+  }
   sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+function closeMobileNav(): void {
+  mobileNavOpen.value = false
 }
 
 function isNavActive(target: string): boolean {
   return route.path === target || route.path.startsWith(`${target}/`)
 }
+
+watch(
+  () => route.fullPath,
+  () => closeMobileNav()
+)
+
 </script>
 
 <template>
-  <div class="admin-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+  <div
+    class="admin-shell"
+    :class="{
+      'sidebar-collapsed': sidebarCollapsed && !isCompactScreen,
+      'compact-layout': isCompactScreen,
+      'mobile-nav-open': mobileNavOpen
+    }"
+  >
+    <button
+      v-if="isCompactScreen && mobileNavOpen"
+      class="mobile-nav-mask"
+      type="button"
+      aria-label="关闭导航"
+      @click="closeMobileNav"
+    />
     <aside class="admin-sidebar">
       <div class="brand-row">
         <div class="brand">排课系统</div>
@@ -93,6 +138,7 @@ function isNavActive(target: string): boolean {
           :to="item.to"
           class="nav-link"
           :class="{ active: isNavActive(item.to) }"
+          @click="closeMobileNav"
         >
           {{ item.label }}
         </RouterLink>
@@ -102,19 +148,20 @@ function isNavActive(target: string): boolean {
     <div class="admin-main">
       <header class="admin-header">
         <div class="header-left">
+          <el-button
+            v-if="sidebarCollapsed || isCompactScreen"
+            class="sidebar-expand-btn"
+            text
+            :aria-label="isCompactScreen ? '打开导航' : '展开导航'"
+            @click="toggleSidebar"
+          >
+            <el-icon><Expand /></el-icon>
+            <span>{{ isCompactScreen ? '导航' : '展开导航' }}</span>
+          </el-button>
           <div class="header-term-display">
             <span>当前学年学期</span>
             <strong>{{ currentTermLabel }}</strong>
           </div>
-          <el-button
-            v-if="sidebarCollapsed"
-            class="sidebar-expand-btn"
-            text
-            @click="toggleSidebar"
-          >
-            <el-icon><Expand /></el-icon>
-            <span>展开导航</span>
-          </el-button>
         </div>
         <div class="user-actions">
           <div class="header-accountbar">

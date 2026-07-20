@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Lock, Unlock } from '@element-plus/icons-vue'
+import { CircleCheckFilled, Lock, Unlock } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { notify } from '../../utils/notify'
+import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 import {
+  defaultCourseDefaultConfig,
   defaultRuleWeightConfig,
   hydrateRuleSettingsSnapshotFromApi,
   loadRuleSettingsSnapshot,
@@ -37,6 +39,8 @@ import {
 import {
   buildRemainingCoursePool,
   buildRequiredCourseBlocks,
+  findOddEvenCountIssues,
+  type BuildRequiredCourseBlocksParams,
   type CoursePoolBlock
 } from '../../services/engines/coursePoolEngine'
 import {
@@ -47,6 +51,8 @@ import { compileWorkbenchRules } from '../../services/engines/ruleCompiler'
 import {
   solveSmartByApi,
   SmartSchedulerApiError,
+  type ApiSolveDemand,
+  type ApiSmartQueueUpdate,
   type ApiSmartSolveRequest,
   type ApiSmartPlacement,
   type ApiSmartSolveLog
@@ -62,6 +68,11 @@ type Lesson = {
   teacherNames?: string[]
   color: string
   isCombined?: boolean
+  isOddEven?: boolean
+  oddCourseId?: string
+  evenCourseId?: string
+  oddCourseName?: string
+  evenCourseName?: string
   locked?: boolean
 }
 
@@ -133,7 +144,7 @@ type WorkbenchLockDraft = {
   locks: Record<string, Record<string, boolean>>
 }
 
-type PublishTimetableType = 'class' | 'teacher' | 'course' | 'school'
+type ClearScheduleScope = 'class' | 'grade'
 
 const route = useRoute()
 const planName = computed(() => (route.query.planName as string) || '默认方案')
@@ -158,10 +169,12 @@ const selectedGrade = ref('')
 const selectedClass = ref('')
 const activePoolAssignmentKey = ref('')
 const persistLoading = ref(false)
+const workbenchReady = ref(false)
 const smartSchedulingLoading = ref(false)
 const smartProgressVisible = ref(false)
 const smartProgressPercent = ref(0)
 const smartProgressText = ref('准备中...')
+const smartQueueUpdate = ref<ApiSmartQueueUpdate | null>(null)
 const smartLogDialogVisible = ref(false)
 const smartSolveLogs = ref<ApiSmartSolveLog[]>([])
 const smartRuleDetailSections = ref<SmartRuleDetailSection[]>([])
@@ -170,11 +183,18 @@ const smartDetailCollapseActive = ref<string[]>([])
 const lastPersistedAt = ref(0)
 const lastPublishedAt = ref(0)
 const publishDialogVisible = ref(false)
-const selectedPublishTypes = ref<PublishTimetableType[]>(['class'])
+const clearSchedulePopoverVisible = ref(false)
+const clearScheduleScope = ref<ClearScheduleScope>('class')
 const workbenchPersistState = ref<WorkbenchPersistSnapshot>({ entries: {}, meta: {}, drafts: {}, logs: {} })
 const progressSyncing = ref(false)
 let smartProgressTimer: ReturnType<typeof setInterval> | null = null
 let smartProgressStartAt = 0
+
+const smartProgressTitle = computed(() => {
+  if (smartQueueUpdate.value?.status === 'queued') return '智能排课排队中'
+  if (smartQueueUpdate.value?.status === 'running') return '智能排课进行中'
+  return '正在提交智能排课'
+})
 
 const scheduleMap = reactive<Record<string, Record<string, Lesson | null>>>({})
 const dragging = ref<DragPayload | null>(null)
@@ -188,11 +208,11 @@ const lessonContextMenu = reactive({
 
 const ruleSettingsSnapshotRef = ref<RuleSettingsSnapshot>(loadRuleSettingsSnapshot())
 const compiledWorkbenchRules = computed(() => compileWorkbenchRules(ruleSettingsSnapshotRef.value, groupRecords.value))
-const publishTypeOptions: Array<{ value: PublishTimetableType; label: string; implemented: boolean }> = [
-  { value: 'class', label: '班级课表', implemented: true },
-  { value: 'teacher', label: '教师课表', implemented: false },
-  { value: 'course', label: '课程课表', implemented: false },
-  { value: 'school', label: '学校课表', implemented: false }
+const publishTypeOptions = [
+  { value: 'class', label: '班级课表', description: '按班级查看课程、教师与节次安排' },
+  { value: 'teacher', label: '教师课表', description: '按教师汇总本人承担的全部课程' },
+  { value: 'course', label: '课程课表', description: '按课程查看各班级的上课分布' },
+  { value: 'school', label: '学校课表', description: '汇总校区、年级和班级的整体课表' }
 ]
 
 function getCurrentRuleWeightConfigForScope(): RuleWeightConfig {
@@ -223,6 +243,12 @@ function getSoftRuleWeight(config: RuleWeightConfig, key: RuleWeightRuleKey, fal
   if (!row || row.mode !== 'soft' || !row.enabled) return 0
   const value = Math.floor(Number(row.weight) || 0)
   return Math.max(0, Math.min(100, value))
+}
+
+function isFeatureRuleEnabled(config: RuleWeightConfig, key: RuleWeightRuleKey, fallback = true): boolean {
+  if (!config.enabled) return fallback
+  const row = findRuleWeightRule(config, key)
+  return row ? row.enabled : fallback
 }
 
 function keyOf(period: number, day: string): string {
@@ -316,6 +342,7 @@ function buildSmartRuleDetails(payload: ApiSmartSolveRequest, classIds: string[]
   const enableMainSecondary = ruleOptions.enableMainSecondary !== false
   const enableCourseDefault = ruleOptions.enableCourseDefault !== false
   const enableOddEven = ruleOptions.enableOddEven !== false
+  const enableCourseRelation = ruleOptions.enableCourseRelation !== false
   const teacherBanSlotCount = payload.demands.reduce((sum, demand) => {
     return (
       sum +
@@ -325,6 +352,7 @@ function buildSmartRuleDetails(payload: ApiSmartSolveRequest, classIds: string[]
   const teacherHourConstraintCount = payload.teacherHourConstraints?.length || 0
   const teacherMutualConstraintCount = payload.teacherMutualConstraints?.length || 0
   const consecutiveConstraintCount = payload.consecutiveConstraints?.length || 0
+  const courseRelationConstraintCount = payload.courseRelationConstraints?.length || 0
 
   const areaRuleHitCount = (snapshot.courseAreaRules || []).filter((item) => {
     if (item.campus !== campusName) return false
@@ -404,8 +432,12 @@ function buildSmartRuleDetails(payload: ApiSmartSolveRequest, classIds: string[]
     },
     {
       name: '课程关系',
-      status: 'not-integrated',
-      detail: '当前求解器暂未接入。'
+      status: !enableCourseRelation ? 'unused' : courseRelationConstraintCount > 0 ? 'used' : 'unused',
+      detail: !enableCourseRelation
+        ? '已在规则权重中关闭。'
+        : courseRelationConstraintCount > 0
+          ? `命中 ${courseRelationConstraintCount} 条课程关系硬约束。`
+          : '当前范围没有命中课程关系。'
     },
     {
       name: '主副科',
@@ -471,13 +503,20 @@ function stopSmartProgressTimer(): void {
 function startSmartProgress(): void {
   stopSmartProgressTimer()
   smartProgressStartAt = Date.now()
+  smartQueueUpdate.value = null
   smartProgressVisible.value = true
-  smartProgressPercent.value = 8
-  smartProgressText.value = '正在整理排课约束...'
+  smartProgressPercent.value = 4
+  smartProgressText.value = '正在提交智能排课任务...'
+}
+
+function startSmartSolveProgress(): void {
+  if (smartProgressTimer) return
+  smartProgressPercent.value = Math.max(18, smartProgressPercent.value)
+  smartProgressText.value = '正在构建约束模型并求解...'
   smartProgressTimer = setInterval(() => {
     const current = smartProgressPercent.value
     if (current >= 92) return
-    const next = Math.min(92, current + (current < 45 ? 4 : current < 75 ? 3 : 1))
+    const next = Math.min(92, current + (current < 45 ? 3 : current < 75 ? 2 : 1))
     smartProgressPercent.value = next
     if (next < 35) {
       smartProgressText.value = '正在加载班级与课程数据...'
@@ -486,7 +525,54 @@ function startSmartProgress(): void {
     } else {
       smartProgressText.value = '求解中，请稍候...'
     }
-  }, 220)
+  }, 800)
+}
+
+function handleSmartQueueUpdate(update: ApiSmartQueueUpdate): void {
+  const previousStatus = smartQueueUpdate.value?.status
+  smartQueueUpdate.value = update
+  if (update.status === 'queued') {
+    stopSmartProgressTimer()
+    smartProgressPercent.value = 8
+    smartProgressText.value =
+      update.waitingAhead > 0
+        ? `正在排队，前方还有 ${update.waitingAhead} 个任务。`
+        : '任务已进入队列，等待开始。'
+    return
+  }
+  if (update.status === 'running') {
+    if (previousStatus !== 'running') startSmartSolveProgress()
+    return
+  }
+  if (update.status === 'completed') {
+    stopSmartProgressTimer()
+    smartProgressPercent.value = 96
+    smartProgressText.value = '求解完成，正在读取排课结果...'
+    return
+  }
+  if (update.status === 'failed') {
+    stopSmartProgressTimer()
+    smartProgressText.value = '智能排课未完成，正在读取失败原因...'
+  }
+}
+
+function formatQueueEstimate(raw: string | null): string {
+  if (!raw) return '计算中'
+  const time = new Date(raw)
+  if (Number.isNaN(time.getTime())) return '计算中'
+  const now = new Date()
+  const hh = `${time.getHours()}`.padStart(2, '0')
+  const mm = `${time.getMinutes()}`.padStart(2, '0')
+  const ss = `${time.getSeconds()}`.padStart(2, '0')
+  if (time.toDateString() === now.toDateString()) return `今天 ${hh}:${mm}:${ss}`
+  return `${time.getMonth() + 1}月${time.getDate()}日 ${hh}:${mm}:${ss}`
+}
+
+function formatEstimatedDuration(durationMs: number): string {
+  const seconds = Math.max(1, Math.ceil(Number(durationMs || 0) / 1000))
+  if (seconds < 60) return `约 ${seconds} 秒`
+  const minutes = Math.ceil(seconds / 60)
+  return `约 ${minutes} 分钟`
 }
 
 async function finishSmartProgress(success: boolean): Promise<void> {
@@ -500,6 +586,7 @@ async function finishSmartProgress(success: boolean): Promise<void> {
   smartProgressText.value = success ? '智能排课完成，正在应用结果...' : '智能排课失败，正在结束...'
   await sleep(320)
   smartProgressVisible.value = false
+  smartQueueUpdate.value = null
 }
 
 function ensureClassGrid(classId: string): void {
@@ -568,12 +655,22 @@ function resolveDailyPeriodsCountByClassId(classId: string): number {
   return Math.max(1, Math.min(20, Math.floor(Number(total) || DEFAULT_DAILY_PERIODS)))
 }
 
+function resolveMorningLessonsCountByClassId(classId: string): number {
+  const classInfo = classRecords.value.find((item) => item.id === classId)
+  if (!classInfo) return 0
+  const classHour = classHourClassRows.value.find((item) => item.classId === classInfo.id)
+  const gradeHour = classHourRows.value.find((item) => item.campusId === classInfo.campusId && item.grade === classInfo.grade)
+  const count = Math.floor(Number((classHour ?? gradeHour)?.morningLessons || 0))
+  return Math.max(0, Math.min(resolveDailyPeriodsCountByClassId(classId), count))
+}
+
 const weeklyDaysCount = computed(() => {
   return resolveWeeklyDaysCountByClassId(selectedClass.value)
 })
 
 const days = computed(() => allDays.slice(0, weeklyDaysCount.value))
 const dailyPeriodsCount = computed(() => resolveDailyPeriodsCountByClassId(selectedClass.value))
+const morningLessonsCount = computed(() => resolveMorningLessonsCountByClassId(selectedClass.value))
 const periods = computed(() => rangePeriods(dailyPeriodsCount.value))
 const teacherWeeklyDaysCount = computed(() => {
   const campusClassIds = classRecords.value
@@ -682,6 +779,14 @@ function saveWorkbenchMeta(planId: string, savedAt: number, publishedAt: number)
 
 function cloneLesson(lesson: Lesson | null): Lesson | null {
   if (!lesson) return null
+  const assignmentKey = String(lesson.assignmentKey || '')
+  const isOddEven = Boolean(lesson.isOddEven || assignmentKey.startsWith('oe:'))
+  const pairedCourseIds = assignmentKey.startsWith('oe:')
+    ? assignmentKey.slice(3).split('|').map((item) => item.trim()).filter(Boolean)
+    : Array.isArray(lesson.courseIds)
+      ? lesson.courseIds.filter(Boolean)
+      : []
+  const pairedCourseNames = String(lesson.name || '').split('/').map((item) => item.trim())
   return {
     assignmentKey: lesson.assignmentKey,
     courseId: lesson.courseId,
@@ -692,6 +797,11 @@ function cloneLesson(lesson: Lesson | null): Lesson | null {
     teacherNames: Array.isArray(lesson.teacherNames) ? [...lesson.teacherNames] : undefined,
     color: lesson.color,
     isCombined: Boolean(lesson.isCombined),
+    isOddEven,
+    oddCourseId: lesson.oddCourseId || (isOddEven ? pairedCourseIds[0] : undefined),
+    evenCourseId: lesson.evenCourseId || (isOddEven ? pairedCourseIds[1] : undefined),
+    oddCourseName: lesson.oddCourseName || (isOddEven ? pairedCourseNames[0] : undefined),
+    evenCourseName: lesson.evenCourseName || (isOddEven ? pairedCourseNames[1] : undefined),
     locked: Boolean(lesson.locked)
   }
 }
@@ -714,17 +824,6 @@ function readSavedWorkbenchEntry(): SavedScheduleWorkbenchEntry | null {
   const entry = workbenchPersistState.value.entries?.[currentPlanId.value]
   if (!entry || typeof entry !== 'object') return null
   return entry as SavedScheduleWorkbenchEntry
-}
-
-function writeSavedWorkbenchEntry(entry: SavedScheduleWorkbenchEntry): void {
-  workbenchPersistState.value = {
-    ...workbenchPersistState.value,
-    entries: {
-      ...(workbenchPersistState.value.entries || {}),
-      [currentPlanId.value]: entry
-    }
-  }
-  void saveWorkbenchPersistSnapshot(workbenchPersistState.value)
 }
 
 function snapshotLocksOnly(): Record<string, Record<string, boolean>> {
@@ -822,17 +921,6 @@ const selectedSmartLogRecord = computed(() => {
   return matched || smartLogHistory.value[0]
 })
 
-function removeDraftWorkbenchEntry(): void {
-  const currentDrafts = { ...(workbenchPersistState.value.drafts || {}) }
-  if (!(currentPlanId.value in currentDrafts)) return
-  delete currentDrafts[currentPlanId.value]
-  workbenchPersistState.value = {
-    ...workbenchPersistState.value,
-    drafts: currentDrafts
-  }
-  void saveWorkbenchPersistSnapshot(workbenchPersistState.value)
-}
-
 function applyWorkbenchState(state: {
   selectedCampus: string
   selectedGrade: string
@@ -888,41 +976,45 @@ function loadSnapshot(): void {
 }
 
 async function hydrateBasicData(): Promise<void> {
-  workbenchPersistState.value = await loadWorkbenchPersistSnapshot()
-  const loaded = basicDataRepository.load()
-  const parsed = loaded instanceof Promise ? await loaded : loaded
-  const safe = parsed && typeof parsed === 'object' ? parsed : {}
-  campuses.value = Array.isArray((safe as { campuses?: unknown[] }).campuses)
-    ? ((safe as { campuses: Campus[] }).campuses || [])
-    : []
-  classRecords.value = Array.isArray((safe as { classRecords?: unknown[] }).classRecords)
-    ? ((safe as { classRecords: ClassRecord[] }).classRecords || [])
-    : []
-  teacherRecords.value = Array.isArray((safe as { teacherRecords?: unknown[] }).teacherRecords)
-    ? ((safe as { teacherRecords: Array<{ id: string; name: string }> }).teacherRecords || [])
-    : []
-  groupRecords.value = Array.isArray((safe as { groupRecords?: unknown[] }).groupRecords)
-    ? ((safe as { groupRecords: GroupRecord[] }).groupRecords || [])
-    : []
-  courses.value = Array.isArray((safe as { courses?: unknown[] }).courses)
-    ? ((safe as { courses: Array<{ id: string; name: string }> }).courses || [])
-    : []
-  teachingAssignments.value = Array.isArray((safe as { teachingAssignments?: unknown[] }).teachingAssignments)
-    ? ((safe as { teachingAssignments: TeachingAssignmentRecord[] }).teachingAssignments || [])
-    : []
-  classHourRows.value = Array.isArray((safe as { classHourRows?: unknown[] }).classHourRows)
-    ? ((safe as { classHourRows: ClassHourRow[] }).classHourRows || [])
-    : []
-  classHourClassRows.value = Array.isArray((safe as { classHourClassRows?: unknown[] }).classHourClassRows)
-    ? ((safe as { classHourClassRows: ClassHourClassRow[] }).classHourClassRows || [])
-    : []
-  arrangementScopes.value =
-    (safe as { arrangementScopes?: unknown }).arrangementScopes &&
-    typeof (safe as { arrangementScopes?: unknown }).arrangementScopes === 'object'
-      ? ((safe as { arrangementScopes: Record<string, ArrangementScopeState> }).arrangementScopes || {})
-      : {}
-  ensureSelectionValid()
-  loadSnapshot()
+  try {
+    workbenchPersistState.value = await loadWorkbenchPersistSnapshot()
+    const loaded = basicDataRepository.load()
+    const parsed = loaded instanceof Promise ? await loaded : loaded
+    const safe = parsed && typeof parsed === 'object' ? parsed : {}
+    campuses.value = Array.isArray((safe as { campuses?: unknown[] }).campuses)
+      ? ((safe as { campuses: Campus[] }).campuses || [])
+      : []
+    classRecords.value = Array.isArray((safe as { classRecords?: unknown[] }).classRecords)
+      ? ((safe as { classRecords: ClassRecord[] }).classRecords || [])
+      : []
+    teacherRecords.value = Array.isArray((safe as { teacherRecords?: unknown[] }).teacherRecords)
+      ? ((safe as { teacherRecords: Array<{ id: string; name: string }> }).teacherRecords || [])
+      : []
+    groupRecords.value = Array.isArray((safe as { groupRecords?: unknown[] }).groupRecords)
+      ? ((safe as { groupRecords: GroupRecord[] }).groupRecords || [])
+      : []
+    courses.value = Array.isArray((safe as { courses?: unknown[] }).courses)
+      ? ((safe as { courses: Array<{ id: string; name: string }> }).courses || [])
+      : []
+    teachingAssignments.value = Array.isArray((safe as { teachingAssignments?: unknown[] }).teachingAssignments)
+      ? ((safe as { teachingAssignments: TeachingAssignmentRecord[] }).teachingAssignments || [])
+      : []
+    classHourRows.value = Array.isArray((safe as { classHourRows?: unknown[] }).classHourRows)
+      ? ((safe as { classHourRows: ClassHourRow[] }).classHourRows || [])
+      : []
+    classHourClassRows.value = Array.isArray((safe as { classHourClassRows?: unknown[] }).classHourClassRows)
+      ? ((safe as { classHourClassRows: ClassHourClassRow[] }).classHourClassRows || [])
+      : []
+    arrangementScopes.value =
+      (safe as { arrangementScopes?: unknown }).arrangementScopes &&
+      typeof (safe as { arrangementScopes?: unknown }).arrangementScopes === 'object'
+        ? ((safe as { arrangementScopes: Record<string, ArrangementScopeState> }).arrangementScopes || {})
+        : {}
+    ensureSelectionValid()
+    loadSnapshot()
+  } finally {
+    workbenchReady.value = true
+  }
 }
 
 void hydrateBasicData()
@@ -1111,6 +1203,11 @@ function lessonFromBlock(block: CoursePoolBlock): Lesson {
     teacher: normalizedTeacherNames.join(' / '),
     teacherNames: normalizedTeacherNames,
     color: block.color,
+    isOddEven: Boolean(block.isOddEven),
+    oddCourseId: block.oddCourseId,
+    evenCourseId: block.evenCourseId,
+    oddCourseName: block.oddCourseName,
+    evenCourseName: block.evenCourseName,
     locked: false
   }
 }
@@ -1173,15 +1270,15 @@ function buildLessonForClassFromBlock(classId: string, block: CoursePoolBlock): 
   }
 }
 
-function getRequiredCourseBlocksForClass(
+function buildCoursePoolParamsForClass(
   classId: string,
   options?: {
     enableOddEven?: boolean
   }
-): CoursePoolBlock[] {
-  if (!classId) return []
+): BuildRequiredCourseBlocksParams | null {
+  if (!classId) return null
   const classInfo = classRecords.value.find((item) => item.id === classId)
-  if (!classInfo) return [] as CoursePoolBlock[]
+  if (!classInfo) return null
 
   const scopeKey = `${classInfo.campusId}::${classInfo.grade}`
   const scopeRows = arrangementScopes.value[scopeKey]?.rows ?? []
@@ -1200,7 +1297,7 @@ function getRequiredCourseBlocksForClass(
       }
     })
 
-  return buildRequiredCourseBlocks({
+  return {
     campusName: campusNameById(classInfo.campusId),
     grade: classInfo.grade,
     className: classInfo.className,
@@ -1210,7 +1307,17 @@ function getRequiredCourseBlocksForClass(
     teacherNameByCourseId,
     courseNameById: courseNameMap.value,
     courseColorById: courseColorMap.value
-  })
+  }
+}
+
+function getRequiredCourseBlocksForClass(
+  classId: string,
+  options?: {
+    enableOddEven?: boolean
+  }
+): CoursePoolBlock[] {
+  const params = buildCoursePoolParamsForClass(classId, options)
+  return params ? buildRequiredCourseBlocks(params) : []
 }
 
 const requiredCourseBlocks = computed(() => getRequiredCourseBlocksForClass(selectedClass.value))
@@ -1336,6 +1443,12 @@ const teacherGrid = computed(() => {
 })
 const timetableRows = computed(() => periods.value.map((period) => ({ period })))
 const teacherTimetableRows = computed(() => teacherPeriods.value.map((period) => ({ period })))
+
+function timetableRowClassName({ row }: { row: { period: number } }): string {
+  const firstAfternoonPeriod = morningLessonsCount.value + 1
+  if (morningLessonsCount.value <= 0 || firstAfternoonPeriod > dailyPeriodsCount.value) return ''
+  return row.period === firstAfternoonPeriod ? 'is-afternoon-start' : ''
+}
 
 function onDragFromPool(assignmentKey: string): void {
   activePoolAssignmentKey.value = assignmentKey
@@ -1558,6 +1671,61 @@ function buildCourseRuleForbiddenSlotsForLesson(
   return result
 }
 
+function courseRuleMessageAtSlot(
+  lesson: Lesson,
+  classId: string,
+  slotKey: string,
+  movingFromSlotKey?: string
+): string | null {
+  const ruleWeightConfig = getCurrentRuleWeightConfigForScope()
+  const enableCourseArea = isHardRuleEnabled(ruleWeightConfig, 'courseArea')
+  const enableCourseBan = isHardRuleEnabled(ruleWeightConfig, 'courseBan')
+  const relevantSlotKeys = slotListForDaysCount(resolveWeeklyDaysCountByClassId(classId))
+    .filter((slot) => slot.period <= resolveDailyPeriodsCountByClassId(classId))
+    .map((slot) => slot.slotKey)
+  if (
+    buildCourseRuleForbiddenSlotsForLesson(lesson, classId, relevantSlotKeys, {
+      enableCourseArea,
+      enableCourseBan
+    }).has(slotKey)
+  ) {
+    return '课程区域/禁排规则：当前节次不允许安排该课程。'
+  }
+
+  if (!isHardRuleEnabled(ruleWeightConfig, 'courseRelation')) return null
+  const classInfo = classRecords.value.find((item) => item.id === classId)
+  const target = parseSlotKey(slotKey)
+  if (!classInfo || !target) return null
+  const campusName = campusNameById(classInfo.campusId)
+  const subjectNames = lessonSubjectNames(lesson)
+  if (!campusName || subjectNames.size <= 0) return null
+
+  const grid = scheduleMap[classId] || {}
+  for (const rule of ruleSettingsSnapshotRef.value.courseRelationRules || []) {
+    if (rule.campus !== campusName || !(rule.grade === classInfo.grade || rule.grade === '全部年级')) continue
+    const hitsA = subjectNames.has(String(rule.courseA || '').trim())
+    const hitsB = subjectNames.has(String(rule.courseB || '').trim())
+    if (!hitsA && !hitsB) continue
+    if (hitsA && hitsB) {
+      return `课程关系规则：“${rule.courseA}”与“${rule.courseB}”不能合并在同一节次。`
+    }
+    const oppositeName = hitsA ? String(rule.courseB || '').trim() : String(rule.courseA || '').trim()
+    if (!oppositeName) continue
+
+    const conflict = Object.entries(grid).some(([placedSlotKey, placed]) => {
+      if (!placed || placedSlotKey === slotKey || (movingFromSlotKey && placedSlotKey === movingFromSlotKey)) return false
+      const parsed = parseSlotKey(placedSlotKey)
+      if (!parsed || parsed.day !== target.day) return false
+      if (!lessonSubjectNames(placed as Lesson).has(oppositeName)) return false
+      return rule.relationType === '同天互斥' || Math.abs(parsed.period - target.period) === 1
+    })
+    if (conflict) {
+      return `课程关系规则：“${rule.courseA}”与“${rule.courseB}”${rule.relationType === '同天互斥' ? '不能同天安排' : '不能前后相邻'}。`
+    }
+  }
+  return null
+}
+
 function teacherConflictMessagesAtSlot(teachers: string[], slotKey: string, excludedClassIds: string[] = []): string[] {
   if (teachers.length <= 0) return []
   const excluded = new Set(excludedClassIds)
@@ -1582,6 +1750,38 @@ function teacherConflictMessagesAtSlot(teachers: string[], slotKey: string, excl
   return messageList
 }
 
+function teacherMutualMessageAtSlot(
+  teachers: string[],
+  slotKey: string,
+  excludedClassIds: string[] = []
+): string | null {
+  if (!isHardRuleEnabled(getCurrentRuleWeightConfigForScope(), 'teacherMutual')) return null
+  const incoming = new Set(teachers.map((item) => String(item || '').trim()).filter(Boolean))
+  if (incoming.size <= 0) return null
+  const excluded = new Set(excludedClassIds)
+  const existing = new Set<string>()
+  Object.entries(scheduleMap).forEach(([classId, grid]) => {
+    if (excluded.has(classId)) return
+    const placed = grid?.[slotKey]
+    if (!placed) return
+    normalizeTeacherNames(placed.teacherNames?.length ? placed.teacherNames : placed.teacher).forEach((name) => existing.add(name))
+  })
+
+  for (const rule of ruleSettingsSnapshotRef.value.teacherMutualRules || []) {
+    if (rule.type !== 'mutual') continue
+    const groupA = new Set((rule.teacherGroupA || []).map((item) => String(item || '').trim()).filter(Boolean))
+    const groupB = new Set((rule.teacherGroupB || []).map((item) => String(item || '').trim()).filter(Boolean))
+    const incomingA = Array.from(incoming).some((name) => groupA.has(name))
+    const incomingB = Array.from(incoming).some((name) => groupB.has(name))
+    const existingA = Array.from(existing).some((name) => groupA.has(name))
+    const existingB = Array.from(existing).some((name) => groupB.has(name))
+    if ((incomingA && incomingB) || (incomingA && existingB) || (incomingB && existingA)) {
+      return '教师互斥规则：互斥教师组不能在同一节次同时上课。'
+    }
+  }
+  return null
+}
+
 function buildDropEvaluationContext(payload: EngineDragPayload | null, period: number, day: string) {
   return {
     payload,
@@ -1604,6 +1804,9 @@ function buildDropEvaluationContext(payload: EngineDragPayload | null, period: n
     teacherBanMessageAtSlot: (lesson: EngineLesson, classId: string, slotKey: string) =>
       teacherBanMessageAtSlot(lesson as Lesson, classId, slotKey),
     teacherConflictMessagesAtSlot,
+    teacherMutualMessageAtSlot,
+    courseRuleMessageAtSlot: (lesson: EngineLesson, classId: string, slotKey: string, movingFromSlotKey?: string) =>
+      courseRuleMessageAtSlot(lesson as Lesson, classId, slotKey, movingFromSlotKey),
     sameClassDayAdjacencyMessageAtSlot: (lesson: EngineLesson, classId: string, slotKey: string, movingFromSlotKey?: string) =>
       sameClassDayAdjacencyMessageAtSlot(lesson as Lesson, classId, slotKey, movingFromSlotKey)
   }
@@ -1836,6 +2039,47 @@ function buildTeacherMutualConstraintsForGrade(
   return constraints
 }
 
+function buildCourseRelationConstraintsForGrade(
+  classIds: string[]
+): NonNullable<ApiSmartSolveRequest['courseRelationConstraints']> {
+  const campusName = campusNameById(selectedCampus.value)
+  const grade = selectedGrade.value
+  if (!campusName || !grade) return []
+
+  const courseIdsByName = new Map<string, string[]>()
+  courses.value.forEach((course) => {
+    const name = String(course.name || '').trim()
+    const id = String(course.id || '').trim()
+    if (!name || !id) return
+    const ids = courseIdsByName.get(name) || []
+    ids.push(id)
+    courseIdsByName.set(name, ids)
+  })
+
+  const constraints: NonNullable<ApiSmartSolveRequest['courseRelationConstraints']> = []
+  const emitted = new Set<string>()
+  ;(ruleSettingsSnapshotRef.value.courseRelationRules || []).forEach((rule) => {
+    if (rule.campus !== campusName || !(rule.grade === grade || rule.grade === '全部年级')) return
+    const courseAIds = Array.from(new Set(courseIdsByName.get(String(rule.courseA || '').trim()) || []))
+    const courseBIds = Array.from(new Set(courseIdsByName.get(String(rule.courseB || '').trim()) || []))
+    if (courseAIds.length <= 0 || courseBIds.length <= 0) return
+    classIds.forEach((classId) => {
+      const classInfo = classRecords.value.find((item) => item.id === classId)
+      if (!classInfo || campusNameById(classInfo.campusId) !== campusName || classInfo.grade !== grade) return
+      const key = `${classId}::${[...courseAIds].sort().join(',')}::${[...courseBIds].sort().join(',')}::${rule.relationType}`
+      if (emitted.has(key)) return
+      emitted.add(key)
+      constraints.push({
+        classId,
+        courseAIds,
+        courseBIds,
+        relationType: rule.relationType
+      })
+    })
+  })
+  return constraints
+}
+
 function buildConsecutiveConstraintsForGrade(
   classIds: string[],
   demands: Array<{
@@ -1924,13 +2168,7 @@ function buildDefaultRulesForSolver(
     sameClassNoConsecutive: true,
     twoLessonsGap: true
   }
-  const rules = defaultConfig?.rules || {
-    syncStart: { main: '必须一致', secondary: '必须一致' },
-    distribution: { main: '尽量在一上午/一下午集中上完', secondary: '尽量在一上午/一下午集中上完' },
-    noCrossNoon: { main: '不能让老师在上午末节和下午首节连上', secondary: '不能让老师在上午末节和下午首节连上' },
-    sameClassNoConsecutive: { main: '无特殊要求', secondary: '无特殊要求' },
-    twoLessonsGap: { main: '是', secondary: '是' }
-  }
+  const rules = defaultConfig?.rules || defaultCourseDefaultConfig.rules
 
   const mainSecondaryRule = (snapshot.mainSecondaryRules || [])
     .filter((item) => item.campus === campusName && (item.grade === grade || item.grade === '全部年级'))
@@ -2009,6 +2247,92 @@ function buildDefaultRulesForSolver(
   }
 }
 
+function normalizeCombinedSolveDemands(rawDemands: ApiSolveDemand[]): ApiSolveDemand[] {
+  const result: ApiSolveDemand[] = []
+  const combinedGroups = new Map<string, ApiSolveDemand[]>()
+
+  rawDemands.forEach((demand) => {
+    const targetClassIds = Array.from(new Set((demand.targetClassIds || []).filter(Boolean))).sort()
+    if (targetClassIds.length <= 1) {
+      result.push({ ...demand, targetClassIds })
+      return
+    }
+    const key = `${demand.assignmentKey}::${targetClassIds.join('|')}`
+    const group = combinedGroups.get(key) || []
+    group.push({ ...demand, targetClassIds })
+    combinedGroups.set(key, group)
+  })
+
+  combinedGroups.forEach((group) => {
+    const targetClassIds = group[0]?.targetClassIds || []
+    const demandBySource = new Map(
+      group
+        .filter((item) => item.sourceClassId && targetClassIds.includes(item.sourceClassId))
+        .map((item) => [item.sourceClassId as string, item] as const)
+    )
+
+    const pushSingle = (demand: ApiSolveDemand, classId: string, remaining = demand.remaining) => {
+      const lesson = demand.lessonsByClass[classId]
+      if (!lesson || remaining <= 0) return
+      result.push({
+        ...demand,
+        sourceClassId: classId,
+        remaining,
+        targetClassIds: [classId],
+        lessonsByClass: { [classId]: lesson },
+        teacherNames: Array.from(new Set(lesson.teacherNames?.length ? lesson.teacherNames : [lesson.teacher])).filter(Boolean),
+        forbiddenSlotsByClass: demand.forbiddenSlotsByClass?.[classId]
+          ? { [classId]: [...demand.forbiddenSlotsByClass[classId]] }
+          : undefined
+      })
+    }
+
+    if (targetClassIds.some((classId) => !demandBySource.has(classId))) {
+      group.forEach((demand) => {
+        const sourceClassId = demand.sourceClassId || demand.targetClassIds[0]
+        if (sourceClassId) pushSingle(demand, sourceClassId)
+      })
+      return
+    }
+
+    const commonRemaining = Math.min(
+      ...targetClassIds.map((classId) => Math.max(0, Math.floor(Number(demandBySource.get(classId)?.remaining) || 0)))
+    )
+    const first = group[0]
+    if (first && commonRemaining > 0) {
+      const lessonsByClass = Object.fromEntries(
+        targetClassIds.map((classId) => [classId, demandBySource.get(classId)?.lessonsByClass[classId] || first.lessonsByClass[classId]])
+      )
+      const forbiddenSlotsByClass = Object.fromEntries(
+        targetClassIds.flatMap((classId) => {
+          const slots = Array.from(
+            new Set(group.flatMap((item) => item.forbiddenSlotsByClass?.[classId] || []))
+          )
+          return slots.length > 0 ? [[classId, slots] as const] : []
+        })
+      )
+      result.push({
+        ...first,
+        sourceClassId: undefined,
+        remaining: commonRemaining,
+        targetClassIds,
+        lessonsByClass,
+        teacherNames: Array.from(new Set(group.flatMap((item) => item.teacherNames || []))),
+        forbiddenSlotsByClass: Object.keys(forbiddenSlotsByClass).length > 0 ? forbiddenSlotsByClass : undefined
+      })
+    }
+
+    targetClassIds.forEach((classId) => {
+      const source = demandBySource.get(classId)
+      if (!source) return
+      const residual = Math.max(0, Math.floor(Number(source.remaining) || 0) - commonRemaining)
+      if (residual > 0) pushSingle(source, classId, residual)
+    })
+  })
+
+  return result
+}
+
 function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveRequest {
   const ruleWeightConfig = getCurrentRuleWeightConfigForScope()
   const enableTeacherBan = isHardRuleEnabled(ruleWeightConfig, 'teacherBan')
@@ -2018,18 +2342,16 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
   const enableCombineCourse = isHardRuleEnabled(ruleWeightConfig, 'combineCourse')
   const enableCourseArea = isHardRuleEnabled(ruleWeightConfig, 'courseArea')
   const enableCourseBan = isHardRuleEnabled(ruleWeightConfig, 'courseBan')
-  const weekDistributionWeight = getSoftRuleWeight(ruleWeightConfig, 'teacherWeekDistribution', 60)
-  const dayDistributionWeight = getSoftRuleWeight(ruleWeightConfig, 'teacherDayDistribution', 40)
-  const oddEvenWeight = getSoftRuleWeight(ruleWeightConfig, 'oddEven', 18)
-  const mainSecondaryWeight = getSoftRuleWeight(ruleWeightConfig, 'mainSecondary', 17)
-  const courseDefaultWeight = getSoftRuleWeight(ruleWeightConfig, 'courseDefault', 15)
-  const consecutiveWeight = getSoftRuleWeight(ruleWeightConfig, 'consecutive', 20)
+  const weekDistributionWeight = getSoftRuleWeight(ruleWeightConfig, 'teacherWeekDistribution', 45)
+  const dayDistributionWeight = getSoftRuleWeight(ruleWeightConfig, 'teacherDayDistribution', 25)
+  const consecutiveWeight = getSoftRuleWeight(ruleWeightConfig, 'consecutive', 30)
   const includeWeekDistribution = weekDistributionWeight > 0
   const includeDayDistribution = dayDistributionWeight > 0
-  const enableOddEven = oddEvenWeight > 0
-  const enableMainSecondary = mainSecondaryWeight > 0
-  const enableCourseDefault = courseDefaultWeight > 0
-  const consecutivePreferredWeight = Math.max(0, Math.min(2000, Math.floor(consecutiveWeight * 16)))
+  const enableOddEven = isFeatureRuleEnabled(ruleWeightConfig, 'oddEven')
+  const enableMainSecondary = isFeatureRuleEnabled(ruleWeightConfig, 'mainSecondary')
+  const enableCourseDefault = isFeatureRuleEnabled(ruleWeightConfig, 'courseDefault')
+  const enableCourseRelation = isHardRuleEnabled(ruleWeightConfig, 'courseRelation')
+  const consecutivePreferredWeight = consecutiveWeight
 
   const classIdSet = new Set(classIds)
   classIds.forEach((classId) => ensureClassGrid(classId))
@@ -2039,7 +2361,7 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
   const fixedSlotKeys = enableGlobalFixedPoint
     ? slots.filter((slot) => globalFixedPointAt(slot.period, slot.day)).map((slot) => slot.slotKey)
     : []
-  const demands = classIds.flatMap((classId) =>
+  const rawDemands: ApiSolveDemand[] = classIds.flatMap((classId) =>
     getCoursePoolForClass(classId, { enableOddEven })
       .filter((block) => block.remaining > 0)
       .map((block) => {
@@ -2076,6 +2398,7 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
         })
         return {
           assignmentKey: block.assignmentKey,
+          sourceClassId: classId,
           remaining: block.remaining,
           targetClassIds: uniqTargetClassIds,
           lessonsByClass,
@@ -2084,6 +2407,7 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
         }
       })
   )
+  const demands = normalizeCombinedSolveDemands(rawDemands)
 
   const scheduleMapPayload = Object.fromEntries(
     classIds.map((classId) => [
@@ -2098,6 +2422,7 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
   })
   const teacherMutualConstraints = enableTeacherMutual ? buildTeacherMutualConstraintsForGrade(demands) : []
   const consecutiveConstraints = buildConsecutiveConstraintsForGrade(classIds, demands)
+  const courseRelationConstraints = enableCourseRelation ? buildCourseRelationConstraintsForGrade(classIds) : []
   const { defaultRules, noonBoundaryByClass } = buildDefaultRulesForSolver(classIds, {
     enableCourseDefault,
     enableMainSecondary
@@ -2125,9 +2450,11 @@ function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveReq
       enableCourseDefault,
       enableMainSecondary,
       enableOddEven,
+      enableCourseRelation,
       consecutivePreferredWeight
     },
     consecutiveConstraints,
+    courseRelationConstraints,
     scheduleMap: scheduleMapPayload,
     demands
   }
@@ -2166,6 +2493,11 @@ function applyApiPlacements(placements: ApiSmartPlacement[]): void {
       teacherNames: Array.isArray(item.lesson.teacherNames) ? [...item.lesson.teacherNames] : undefined,
       color: item.lesson.color,
       isCombined: Boolean(item.lesson.isCombined),
+      isOddEven: Boolean(item.lesson.isOddEven),
+      oddCourseId: item.lesson.oddCourseId,
+      evenCourseId: item.lesson.evenCourseId,
+      oddCourseName: item.lesson.oddCourseName,
+      evenCourseName: item.lesson.evenCourseName,
       locked: Boolean(item.lesson.locked)
     }
   })
@@ -2208,6 +2540,23 @@ async function runSmartScheduling(): Promise<void> {
   }
   classIds.forEach((classId) => ensureClassGrid(classId))
 
+  const enableOddEven = isFeatureRuleEnabled(getCurrentRuleWeightConfigForScope(), 'oddEven')
+  const oddEvenIssues = enableOddEven
+    ? classIds.flatMap((classId) => {
+        const params = buildCoursePoolParamsForClass(classId, { enableOddEven: true })
+        return params ? findOddEvenCountIssues(params) : []
+      })
+    : []
+  if (oddEvenIssues.length > 0) {
+    const preview = oddEvenIssues.slice(0, 8).map((item) => item.message).join('\n')
+    await ElMessageBox.alert(
+      `${preview}${oddEvenIssues.length > 8 ? `\n等 ${oddEvenIssues.length} 处` : ''}\n\n请先将单周与双周课程设置为相同的周课时。`,
+      '单双周课时校验',
+      { type: 'warning', confirmButtonText: '我知道了' }
+    )
+    return
+  }
+
   const statsBeforeReschedule = collectPlacedStats(classIds)
   if (statsBeforeReschedule.placed > 0) {
     try {
@@ -2249,14 +2598,14 @@ async function runSmartScheduling(): Promise<void> {
   try {
     const payload = buildApiSmartSolvePayloadForGrade(classIds)
     smartRuleDetailSections.value = buildSmartRuleDetails(payload, classIds)
-    let solved = await solveSmartByApi(payload)
+    let solved = await solveSmartByApi(payload, handleSmartQueueUpdate)
     let placedCount = Number(solved.result.placedCount || 0)
     let remaining = Number.isFinite(solved.result.remainingCount) ? Number(solved.result.remainingCount) : initialRemaining
     let usedRelaxedMode: '' | 'default' = ''
 
     if (placedCount <= 0) {
       const relaxedDefaultPayload = buildRelaxedPayload(payload)
-      const relaxedDefaultSolved = await solveSmartByApi(relaxedDefaultPayload)
+      const relaxedDefaultSolved = await solveSmartByApi(relaxedDefaultPayload, handleSmartQueueUpdate)
       if (Number(relaxedDefaultSolved.result.placedCount || 0) > 0) {
         usedRelaxedMode = 'default'
         solved = relaxedDefaultSolved
@@ -2322,6 +2671,8 @@ async function runSmartScheduling(): Promise<void> {
         message = '智能排课失败：教案齐头冲突（同日多节未连续两节）。'
       } else if (error.code === 'CONSECUTIVE_EXISTING_CONFLICT') {
         message = '智能排课失败：连堂课规则与当前已排课冲突，请调整后重试。'
+      } else if (error.code === 'COURSE_RELATION_EXISTING_CONFLICT') {
+        message = '智能排课失败：当前已排课违反课程关系，请调整后重试。'
       } else {
         message = error.message || message
       }
@@ -2489,19 +2840,6 @@ function buildValidationReport(): { totalRequired: number; totalPlaced: number; 
   })
 }
 
-async function validateScheduleData(): Promise<void> {
-  const report = buildValidationReport()
-  const lines = [
-    `总需求课时：${report.totalRequired}`,
-    `已安排课时：${report.totalPlaced}`,
-    `剩余课时：${report.totalRemaining}`,
-    `教师冲突点：${report.conflictCount}`
-  ]
-  await ElMessageBox.alert(lines.join('\n'), '校验结果', {
-    confirmButtonText: '我知道了'
-  })
-}
-
 async function persistScheduleResult(publish: boolean): Promise<void> {
   if (persistLoading.value) return
   const report = buildValidationReport()
@@ -2535,12 +2873,28 @@ async function persistScheduleResult(publish: boolean): Promise<void> {
       publishedAt: publish ? now : previous?.publishedAt,
       version: (previous?.version || 0) + 1
     }
-    writeSavedWorkbenchEntry(entry)
-    removeDraftWorkbenchEntry()
+    const nextDrafts = { ...(workbenchPersistState.value.drafts || {}) }
+    delete nextDrafts[currentPlanId.value]
+    const nextPublishedEntries = { ...(workbenchPersistState.value.publishedEntries || {}) }
+    if (publish) nextPublishedEntries[currentPlanId.value] = structuredClone(entry)
+    const nextPublishedAt = publish ? now : lastPublishedAt.value
+    workbenchPersistState.value = {
+      ...workbenchPersistState.value,
+      entries: {
+        ...(workbenchPersistState.value.entries || {}),
+        [currentPlanId.value]: entry
+      },
+      publishedEntries: nextPublishedEntries,
+      drafts: nextDrafts,
+      meta: {
+        ...(workbenchPersistState.value.meta || {}),
+        [currentPlanId.value]: { savedAt: now, publishedAt: nextPublishedAt }
+      }
+    }
+    await saveWorkbenchPersistSnapshot(workbenchPersistState.value)
     lastPersistedAt.value = now
     if (publish) lastPublishedAt.value = now
-    saveWorkbenchMeta(currentPlanId.value, lastPersistedAt.value, lastPublishedAt.value)
-    notify.success(publish ? '课表已生成并保存。' : '排课结果已保存。')
+    notify.success(publish ? '班级、教师、课程和学校课表已同步生成并保存。' : '排课结果已保存。')
   } catch (error) {
     console.error('[ScheduleWorkbench] 保存失败', error)
     notify.error('保存失败，请稍后重试。')
@@ -2559,21 +2913,6 @@ function closePublishDialog(): void {
 }
 
 async function confirmPublishDialog(): Promise<void> {
-  const picked = selectedPublishTypes.value
-  if (!picked.length) {
-    notify.warning('请至少勾选一个课表类型。')
-    return
-  }
-  const unsupported = publishTypeOptions
-    .filter((item) => picked.includes(item.value) && !item.implemented)
-    .map((item) => item.label)
-  if (unsupported.length) {
-    notify.info(`已选择：${unsupported.join('、')}，当前版本暂未支持生成。`)
-  }
-  if (!picked.includes('class')) {
-    notify.warning('当前仅支持生成班级课表，请勾选“班级课表”。')
-    return
-  }
   closePublishDialog()
   await persistScheduleResult(true)
 }
@@ -2586,14 +2925,25 @@ function parseSlotKey(slotKey: string): { period: number; day: string } | null {
   return { period, day }
 }
 
-async function clearCurrentClassSchedule(): Promise<void> {
-  if (!selectedClass.value) {
-    notify.warning('请先选择班级。')
+async function confirmClearSchedule(): Promise<void> {
+  const isGradeScope = clearScheduleScope.value === 'grade'
+  const targetClassIds = isGradeScope
+    ? classTabs.value.map((item) => item.id).filter(Boolean)
+    : selectedClass.value
+      ? [selectedClass.value]
+      : []
+
+  if (targetClassIds.length === 0) {
+    notify.warning(isGradeScope ? '当前年级暂无可清空班级。' : '请先选择班级。')
     return
   }
 
+  const targetLabel = isGradeScope
+    ? `「${selectedGrade.value}」全部 ${targetClassIds.length} 个班级`
+    : `「${currentClassName.value}」`
+
   try {
-    await ElMessageBox.confirm(`确认清空「${currentClassName.value}」的排课结果吗？`, '清空确认', {
+    await ElMessageBox.confirm(`确认清空${targetLabel}的排课结果吗？锁定课程和全局固定点将被保留。`, '清空确认', {
       type: 'warning',
       confirmButtonText: '确认清空',
       cancelButtonText: '取消',
@@ -2603,31 +2953,35 @@ async function clearCurrentClassSchedule(): Promise<void> {
     return
   }
 
-  ensureClassGrid(selectedClass.value)
   let clearedCount = 0
   let lockedCount = 0
   let fixedCount = 0
 
-  Object.entries(scheduleMap[selectedClass.value]).forEach(([slotKey, lesson]) => {
-    if (!lesson) return
-    if (lesson.locked) {
-      lockedCount += 1
-      return
-    }
-    const parsed = parseSlotKey(slotKey)
-    if (parsed && globalFixedPointAt(parsed.period, parsed.day)) {
-      fixedCount += 1
-      return
-    }
-    scheduleMap[selectedClass.value][slotKey] = null
-    clearedCount += 1
+  targetClassIds.forEach((classId) => {
+    ensureClassGrid(classId)
+    Object.entries(scheduleMap[classId]).forEach(([slotKey, lesson]) => {
+      if (!lesson) return
+      if (lesson.locked) {
+        lockedCount += 1
+        return
+      }
+      const parsed = parseSlotKey(slotKey)
+      if (parsed && globalFixedPointAt(parsed.period, parsed.day)) {
+        fixedCount += 1
+        return
+      }
+      scheduleMap[classId][slotKey] = null
+      clearedCount += 1
+    })
   })
+
+  clearSchedulePopoverVisible.value = false
 
   if (clearedCount <= 0) {
     notify.warning(`无可清空课程（锁定 ${lockedCount}，固定点 ${fixedCount}）。`)
     return
   }
-  notify.success(`已清空 ${clearedCount} 节（保留锁定 ${lockedCount}，固定点 ${fixedCount}）。`)
+  notify.success(`已清空${isGradeScope ? '当前年级' : '当前班级'} ${clearedCount} 节（保留锁定 ${lockedCount}，固定点 ${fixedCount}）。`)
 }
 
 function exitPoolHighlightMode(): void {
@@ -2708,7 +3062,8 @@ function toggleGradeLock(): void {
 </script>
 
 <template>
-  <article class="panel workbench-panel">
+  <AppContentSkeleton v-if="!workbenchReady" variant="workbench" />
+  <article v-else class="panel workbench-panel">
     <header class="workbench-header">
       <div class="workbench-header-left">
         <div class="workbench-filters workbench-filters--triple">
@@ -2724,27 +3079,39 @@ function toggleGradeLock(): void {
         <div class="class-tabs-row">
           <el-button
             class="grade-lock-btn"
-            :type="gradeAllLocked() ? 'primary' : 'default'"
+            :class="{ 'is-locked': gradeAllLocked() }"
             :disabled="!gradeHasLessons()"
+            :aria-pressed="gradeAllLocked()"
+            :title="gradeAllLocked() ? '点击解锁当前年级全部班级' : '点击锁定当前年级全部班级'"
             @click="toggleGradeLock"
           >
             <el-icon><component :is="gradeAllLocked() ? Lock : Unlock" /></el-icon>
-            <span>年级锁</span>
+            <span>{{ gradeAllLocked() ? '全年级已锁定' : '锁定全年级' }}</span>
           </el-button>
           <nav class="class-tabs el-class-tabs">
             <el-radio-group v-model="selectedClass" @change="exitPoolHighlightMode">
               <div
                 v-for="classItem in classTabs"
                 :key="classItem.id"
-                class="class-tab-item"
+                :class="[
+                  'class-tab-item',
+                  {
+                    'is-current': selectedClass === classItem.id,
+                    'is-locked': classAllLocked(classItem.id),
+                    'is-disabled': !classHasLessons(classItem.id)
+                  }
+                ]"
               >
-                <el-radio-button :label="classItem.id" @click="exitPoolHighlightMode">
+                <el-radio-button :value="classItem.id" @click="exitPoolHighlightMode">
                   {{ classItem.className }}
                 </el-radio-button>
                 <el-button
                   class="class-tab-lock-btn"
-                  :type="classAllLocked(classItem.id) ? 'primary' : 'default'"
+                  :class="{ 'is-locked': classAllLocked(classItem.id) }"
                   :disabled="!classHasLessons(classItem.id)"
+                  :aria-label="classAllLocked(classItem.id) ? `解锁${classItem.className}` : `锁定${classItem.className}`"
+                  :aria-pressed="classAllLocked(classItem.id)"
+                  :title="classAllLocked(classItem.id) ? `解锁${classItem.className}` : `锁定${classItem.className}`"
                   @click.stop="toggleClassLock(classItem.id)"
                 >
                   <el-icon><component :is="classAllLocked(classItem.id) ? Lock : Unlock" /></el-icon>
@@ -2757,8 +3124,36 @@ function toggleGradeLock(): void {
 
       <div class="workbench-actions">
         <span class="save-status-text">{{ saveStatusText }}</span>
-        <el-button type="danger" plain @click="clearCurrentClassSchedule">清空本班</el-button>
-        <el-button @click="validateScheduleData">校验课表</el-button>
+        <el-popover
+          v-model:visible="clearSchedulePopoverVisible"
+          placement="bottom-end"
+          trigger="click"
+          :width="280"
+          popper-class="schedule-clear-popover"
+        >
+          <template #reference>
+            <el-button type="danger" plain>清空课表</el-button>
+          </template>
+          <div class="schedule-clear-panel">
+            <div class="schedule-clear-title">选择清空范围</div>
+            <el-radio-group v-model="clearScheduleScope" class="schedule-clear-options">
+              <el-radio value="class" :disabled="!selectedClass">
+                <span>当前班级</span>
+                <small>{{ currentClassName || '未选择班级' }}</small>
+              </el-radio>
+              <el-radio value="grade" :disabled="classTabs.length === 0">
+                <span>当前年级全部班级</span>
+                <small>{{ selectedGrade || '未选择年级' }} · {{ classTabs.length }} 个班级</small>
+              </el-radio>
+            </el-radio-group>
+            <div class="schedule-clear-actions">
+              <el-button text @click="clearSchedulePopoverVisible = false">取消</el-button>
+              <el-button type="danger" :disabled="clearScheduleScope === 'class' ? !selectedClass : classTabs.length === 0" @click="confirmClearSchedule">
+                确认清空
+              </el-button>
+            </div>
+          </div>
+        </el-popover>
         <el-button :loading="smartSchedulingLoading" @click="runSmartScheduling">智能排课</el-button>
         <el-button plain @click="openSmartLogsDialog">查看排课日志</el-button>
         <el-button :loading="persistLoading" @click="persistScheduleResult(false)">保存课表</el-button>
@@ -2785,6 +3180,7 @@ function toggleGradeLock(): void {
           >
             <strong>{{ course.name }}</strong>
             <span>{{ course.teacher }}</span>
+            <i v-if="course.isOddEven" class="pool-odd-even-badge">单双</i>
             <i v-if="isPoolBlockCombined(course)" class="pool-combine-badge">合</i>
             <i class="pool-count-badge">{{ course.remaining }}</i>
           </div>
@@ -2799,7 +3195,7 @@ function toggleGradeLock(): void {
           <span class="board-title">{{ classScheduleTitle }}</span>
           <span v-if="activeCourseLabel" class="board-active-tag">{{ activeCourseLabel }}</span>
         </div>
-        <el-table :data="timetableRows" border class="workbench-el-table">
+        <el-table :data="timetableRows" border class="workbench-el-table" :row-class-name="timetableRowClassName">
           <el-table-column prop="period" label="节次" width="78" />
           <el-table-column v-for="day in days" :key="day" :label="day" min-width="128">
             <template #default="{ row }">
@@ -2845,6 +3241,7 @@ function toggleGradeLock(): void {
                 >
                   <strong>{{ currentGrid[keyOf(row.period, day)]?.name }}</strong>
                   <span>{{ currentGrid[keyOf(row.period, day)]?.teacher }}</span>
+                  <i v-if="currentGrid[keyOf(row.period, day)]?.isOddEven" class="lesson-odd-even-badge">单双</i>
                   <i v-if="currentGrid[keyOf(row.period, day)]?.isCombined" class="lesson-combine-badge">合</i>
                   <i v-if="currentGrid[keyOf(row.period, day)]?.locked" class="lesson-lock-badge">锁</i>
                 </div>
@@ -2865,7 +3262,13 @@ function toggleGradeLock(): void {
           v-if="activeTeacherName === '未设置教师'"
           description="当前课程未设置教师，教师课表不显示相关课程。"
         />
-        <el-table v-else :data="teacherTimetableRows" border class="workbench-el-table">
+        <el-table
+          v-else
+          :data="teacherTimetableRows"
+          border
+          class="workbench-el-table"
+          :row-class-name="timetableRowClassName"
+        >
           <el-table-column prop="period" label="节次" width="78" />
           <el-table-column v-for="day in teacherDays" :key="`t-${day}`" :label="day" min-width="128">
             <template #default="{ row }">
@@ -2879,6 +3282,7 @@ function toggleGradeLock(): void {
                 >
                   <strong>{{ item.lesson.name }}</strong>
                   <span>{{ item.className }}</span>
+                  <i v-if="item.lesson.isOddEven" class="lesson-odd-even-badge">单双</i>
                   <i v-if="item.lesson.isCombined" class="lesson-combine-badge">合</i>
                   <i v-if="item.lesson.locked" class="lesson-lock-badge">锁</i>
                 </div>
@@ -2905,18 +3309,26 @@ function toggleGradeLock(): void {
 
     <el-dialog
       v-model="publishDialogVisible"
-      title="选择生成课表类型"
-      width="420px"
+      title="生成课表"
+      width="520px"
       class="publish-timetable-dialog"
     >
-      <el-checkbox-group v-model="selectedPublishTypes" class="publish-type-list">
+      <p class="publish-type-intro">保存当前排课结果，并同步更新以下四类课表：</p>
+      <div class="publish-type-list">
         <div v-for="item in publishTypeOptions" :key="item.value" class="publish-type-item">
-          <el-checkbox :label="item.value">
-            {{ item.label }}
-          </el-checkbox>
-          <el-tag v-if="!item.implemented" type="info" size="small">暂未实现</el-tag>
+          <el-icon class="publish-type-status"><CircleCheckFilled /></el-icon>
+          <div class="publish-type-copy">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.description }}</span>
+          </div>
         </div>
-      </el-checkbox-group>
+      </div>
+      <el-alert
+        title="四类课表共用当前排课数据，生成后可在“课表管理”中切换查看。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
       <template #footer>
         <div class="dialog-actions">
           <el-button @click="closePublishDialog">取消</el-button>
@@ -2927,7 +3339,7 @@ function toggleGradeLock(): void {
 
     <el-dialog
       v-model="smartProgressVisible"
-      title="智能排课进行中"
+      :title="smartProgressTitle"
       width="460px"
       :show-close="false"
       :close-on-click-modal="false"
@@ -2937,6 +3349,52 @@ function toggleGradeLock(): void {
       class="smart-progress-dialog"
     >
       <div class="smart-progress-content">
+        <section
+          v-if="smartQueueUpdate?.status === 'queued'"
+          class="smart-queue-status smart-queue-status--waiting"
+        >
+          <div class="smart-queue-status-head">
+            <strong>按提交顺序等待</strong>
+            <el-tag type="warning" effect="plain">
+              前方 {{ smartQueueUpdate.waitingAhead }} 个任务
+            </el-tag>
+          </div>
+          <p>系统同一时间只执行一个智能排课任务，轮到当前任务后会自动开始，无需重复提交。</p>
+          <dl class="smart-queue-estimates">
+            <div>
+              <dt>队列任务数</dt>
+              <dd>{{ smartQueueUpdate.queueSize }} 个</dd>
+            </div>
+            <div>
+              <dt>预计开始</dt>
+              <dd>{{ formatQueueEstimate(smartQueueUpdate.estimatedStartAt) }}</dd>
+            </div>
+            <div>
+              <dt>预计完成</dt>
+              <dd>{{ formatQueueEstimate(smartQueueUpdate.estimatedFinishAt) }}</dd>
+            </div>
+          </dl>
+        </section>
+        <section
+          v-else-if="smartQueueUpdate?.status === 'running'"
+          class="smart-queue-status smart-queue-status--running"
+        >
+          <div class="smart-queue-status-head">
+            <strong>当前任务正在求解</strong>
+            <el-tag type="success" effect="plain">已开始</el-tag>
+          </div>
+          <p>求解器已轮到当前任务，完成后会自动应用排课结果。</p>
+          <dl class="smart-queue-estimates smart-queue-estimates--running">
+            <div>
+              <dt>预计耗时</dt>
+              <dd>{{ formatEstimatedDuration(smartQueueUpdate.estimatedDurationMs) }}</dd>
+            </div>
+            <div>
+              <dt>预计完成</dt>
+              <dd>{{ formatQueueEstimate(smartQueueUpdate.estimatedFinishAt) }}</dd>
+            </div>
+          </dl>
+        </section>
         <el-progress :percentage="smartProgressPercent" :stroke-width="16" />
         <p class="smart-progress-text">{{ smartProgressText }}</p>
       </div>

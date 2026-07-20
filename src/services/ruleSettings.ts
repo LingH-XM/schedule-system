@@ -5,7 +5,6 @@ export type OddEvenRuleRecord = {
   campus: string
   grade: string
   classNames: string[]
-  scope: string
   oddCourse: string
   evenCourse: string
 }
@@ -17,7 +16,6 @@ export type CombineCourseRuleRecord = {
   grade: string
   classNames: string[]
   course: string
-  scope: string
 }
 
 export type CourseAreaRuleRecord = {
@@ -117,6 +115,7 @@ export type RuleWeightHardKey =
   | 'courseArea'
   | 'courseBan'
   | 'combineCourse'
+  | 'courseRelation'
 
 export type RuleWeightSoftKey =
   | 'teacherWeekDistribution'
@@ -125,7 +124,6 @@ export type RuleWeightSoftKey =
   | 'oddEven'
   | 'mainSecondary'
   | 'courseDefault'
-  | 'courseRelation'
 
 export type RuleWeightRuleKey = RuleWeightHardKey | RuleWeightSoftKey
 
@@ -193,7 +191,7 @@ export type RuleSettingsSnapshot = {
 }
 
 const RULE_SETTINGS_STORAGE_KEY = 'schedule_rule_settings_v1'
-const CURRENT_SNAPSHOT_VERSION = 1
+const CURRENT_SNAPSHOT_VERSION = 2
 const ruleSettingsSource = (import.meta.env.VITE_RULE_SETTINGS_SOURCE ?? import.meta.env.VITE_BASIC_DATA_SOURCE ?? 'api').toLowerCase()
 const ruleSettingsApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/$/, '')
 const ruleSettingsApiProfile = (import.meta.env.VITE_API_PROFILE ?? 'test').trim().toLowerCase() || 'test'
@@ -202,6 +200,24 @@ const RULE_SETTINGS_API_PATH = `/api/${ruleSettingsApiProfile}/rule-settings`
 
 export const defaultOddEvenRules: OddEvenRuleRecord[] = []
 export const defaultCourseDefaultConfig: CourseDefaultConfig = {
+  enabled: true,
+  rules: {
+    syncStart: { main: '尽量一致', secondary: '无特殊要求' },
+    distribution: { main: '尽量分散到不同天', secondary: '尽量分散到不同天' },
+    noCrossNoon: { main: '不能让老师在上午末节和下午首节连上', secondary: '不能让老师在上午末节和下午首节连上' },
+    sameClassNoConsecutive: { main: '优先不连堂', secondary: '优先不连堂' },
+    twoLessonsGap: { main: '是', secondary: '是' }
+  },
+  ruleEnabled: {
+    syncStart: true,
+    distribution: true,
+    noCrossNoon: true,
+    sameClassNoConsecutive: true,
+    twoLessonsGap: true
+  }
+}
+
+const legacyCourseDefaultConfig: CourseDefaultConfig = {
   enabled: true,
   rules: {
     syncStart: { main: '必须一致', secondary: '必须一致' },
@@ -219,26 +235,56 @@ export const defaultCourseDefaultConfig: CourseDefaultConfig = {
   }
 }
 
+export function cloneCourseDefaultConfig(config: CourseDefaultConfig = defaultCourseDefaultConfig): CourseDefaultConfig {
+  return {
+    enabled: config.enabled,
+    rules: {
+      syncStart: { ...config.rules.syncStart },
+      distribution: { ...config.rules.distribution },
+      noCrossNoon: { ...config.rules.noCrossNoon },
+      sameClassNoConsecutive: { ...config.rules.sameClassNoConsecutive },
+      twoLessonsGap: { ...config.rules.twoLessonsGap }
+    },
+    ruleEnabled: { ...config.ruleEnabled }
+  }
+}
+
+function isLegacyCourseDefaultConfig(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const raw = value as Partial<CourseDefaultConfig>
+  const rawRules = raw.rules || ({} as CourseDefaultConfig['rules'])
+  const rawEnabled = raw.ruleEnabled || ({} as CourseDefaultConfig['ruleEnabled'])
+  return (
+    raw.enabled !== false &&
+    (Object.keys(legacyCourseDefaultConfig.rules) as CourseDefaultRuleKey[]).every(
+      (key) =>
+        rawRules[key]?.main === legacyCourseDefaultConfig.rules[key].main &&
+        rawRules[key]?.secondary === legacyCourseDefaultConfig.rules[key].secondary &&
+        rawEnabled[key] !== false
+    )
+  )
+}
+
 const defaultRuleWeightHardRules: RuleWeightHardRule[] = [
   { key: 'teacherConflict', enabled: true, priority: 1 },
-  { key: 'teacherBan', enabled: true, priority: 1 },
+  { key: 'classConflict', enabled: true, priority: 1 },
+  { key: 'teacherBan', enabled: true, priority: 2 },
   { key: 'teacherHourLimit', enabled: true, priority: 2 },
   { key: 'teacherMutual', enabled: true, priority: 2 },
-  { key: 'classConflict', enabled: true, priority: 2 },
   { key: 'globalFixedPoint', enabled: true, priority: 3 },
   { key: 'courseArea', enabled: true, priority: 4 },
-  { key: 'courseBan', enabled: true, priority: 5 },
-  { key: 'combineCourse', enabled: true, priority: 6 }
+  { key: 'courseBan', enabled: true, priority: 4 },
+  { key: 'combineCourse', enabled: true, priority: 4 },
+  { key: 'courseRelation', enabled: true, priority: 4 }
 ]
 
 const defaultRuleWeightSoftRules: RuleWeightSoftRule[] = [
-  { key: 'teacherWeekDistribution', enabled: true, weight: 12 },
-  { key: 'teacherDayDistribution', enabled: true, weight: 8 },
-  { key: 'consecutive', enabled: true, weight: 20 },
-  { key: 'oddEven', enabled: true, weight: 18 },
-  { key: 'mainSecondary', enabled: true, weight: 17 },
-  { key: 'courseDefault', enabled: true, weight: 15 },
-  { key: 'courseRelation', enabled: true, weight: 10 }
+  { key: 'teacherWeekDistribution', enabled: true, weight: 45 },
+  { key: 'teacherDayDistribution', enabled: true, weight: 25 },
+  { key: 'consecutive', enabled: true, weight: 30 },
+  { key: 'oddEven', enabled: true, weight: 0 },
+  { key: 'mainSecondary', enabled: true, weight: 0 },
+  { key: 'courseDefault', enabled: true, weight: 0 }
 ]
 
 export const defaultRuleWeightConfig: RuleWeightConfig = {
@@ -280,7 +326,7 @@ function createDefaultSnapshot(): RuleSettingsSnapshot {
     teacherBanRules: {},
     teacherHourRules: [],
     consecutiveSettings: {},
-    courseDefaultConfig: { ...defaultCourseDefaultConfig },
+    courseDefaultConfig: cloneCourseDefaultConfig(),
     ruleWeightConfigs: defaultRuleWeightConfigs.map((item) => ({ ...item, config: normalizeRuleWeightConfig(item.config) })),
     _savedAt: 0
   }
@@ -391,7 +437,6 @@ function isValidOddEvenRule(value: unknown): value is OddEvenRuleRecord {
     typeof rule.grade === 'string' &&
     Array.isArray(rule.classNames) &&
     rule.classNames.every((item) => typeof item === 'string') &&
-    typeof rule.scope === 'string' &&
     typeof rule.oddCourse === 'string' &&
     typeof rule.evenCourse === 'string'
   )
@@ -423,8 +468,7 @@ function isValidCombineRule(value: unknown): value is CombineCourseRuleRecord {
     typeof rule.grade === 'string' &&
     Array.isArray(rule.classNames) &&
     rule.classNames.every((item) => typeof item === 'string') &&
-    typeof rule.course === 'string' &&
-    typeof rule.scope === 'string'
+    typeof rule.course === 'string'
   )
 }
 
@@ -576,6 +620,19 @@ function normalizeCourseDefaultConfig(value: unknown): CourseDefaultConfig {
   const rawRules = (raw.rules && typeof raw.rules === 'object'
     ? (raw.rules as Partial<Record<CourseDefaultRuleKey, Partial<CourseDefaultRulePair>>>)
     : {}) || {}
+  const normalizeDistributionValue = (input: unknown, defaultValue: string): string => {
+    const text = typeof input === 'string' ? input : defaultValue
+    const aliases: Record<string, string> = {
+      '尽量当天上下 午都有课': '尽量分散到不同天',
+      '尽量在一上午/一下午集中上完': '尽量集中在较少天',
+      '尽量均匀分散到整周': '尽量分散到不同天',
+      '优先排在周中时段': '优先安排在周中'
+    }
+    const normalized = aliases[text] || text
+    return ['尽量分散到不同天', '尽量集中在较少天', '优先安排在周中', '无特殊要求'].includes(normalized)
+      ? normalized
+      : defaultValue
+  }
   return {
     enabled: raw.enabled !== false,
     rules: {
@@ -584,10 +641,8 @@ function normalizeCourseDefaultConfig(value: unknown): CourseDefaultConfig {
         secondary: typeof rawRules.syncStart?.secondary === 'string' ? rawRules.syncStart.secondary : fallback.rules.syncStart.secondary
       },
       distribution: {
-        main: typeof rawRules.distribution?.main === 'string' ? rawRules.distribution.main : fallback.rules.distribution.main,
-        secondary: typeof rawRules.distribution?.secondary === 'string'
-          ? rawRules.distribution.secondary
-          : fallback.rules.distribution.secondary
+        main: normalizeDistributionValue(rawRules.distribution?.main, fallback.rules.distribution.main),
+        secondary: normalizeDistributionValue(rawRules.distribution?.secondary, fallback.rules.distribution.secondary)
       },
       noCrossNoon: {
         main: typeof rawRules.noCrossNoon?.main === 'string' ? rawRules.noCrossNoon.main : fallback.rules.noCrossNoon.main,
@@ -625,14 +680,35 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
   const rawRules = Array.isArray(raw.rules) ? raw.rules : []
   const rawHardRules = Array.isArray(raw.hardRules) ? raw.hardRules : []
   const rawSoftRules = Array.isArray(raw.softRules) ? raw.softRules : []
+  const scoringSoftKeys = new Set<RuleWeightSoftKey>(['teacherWeekDistribution', 'teacherDayDistribution', 'consecutive'])
+  const unavailableSoftKeys = new Set<RuleWeightSoftKey>()
+  const legacyDefaultWeights: Record<RuleWeightSoftKey, number> = {
+    teacherWeekDistribution: 12,
+    teacherDayDistribution: 8,
+    consecutive: 20,
+    oddEven: 18,
+    mainSecondary: 17,
+    courseDefault: 15
+  }
+  const rawSoftWeight = (key: RuleWeightSoftKey): number | undefined => {
+    const fromRules = rawRules.find((item) => item && item.key === key)
+    if (fromRules && Number.isFinite(Number(fromRules.weight))) return Number(fromRules.weight)
+    const fromSoftRules = rawSoftRules.find((item) => item && item.key === key)
+    if (fromSoftRules && Number.isFinite(Number(fromSoftRules.weight))) return Number(fromSoftRules.weight)
+    return undefined
+  }
+  const usesLegacyDefaultWeights = (Object.keys(legacyDefaultWeights) as RuleWeightSoftKey[]).every(
+    (key) => rawSoftWeight(key) === legacyDefaultWeights[key]
+  )
 
   const hardByKey = new Map<RuleWeightHardKey, RuleWeightHardRule>()
+  const lockedHardKeys = new Set<RuleWeightHardKey>(['teacherConflict', 'classConflict'])
   for (const fallback of defaultRuleWeightConfig.hardRules) {
     const matched = rawHardRules.find((item) => item && item.key === fallback.key)
     hardByKey.set(fallback.key, {
       key: fallback.key,
-      enabled: matched?.enabled !== false,
-      priority: clampNumber(matched?.priority, 1, 99, fallback.priority)
+      enabled: lockedHardKeys.has(fallback.key) ? true : matched?.enabled !== false,
+      priority: fallback.priority
     })
   }
 
@@ -641,8 +717,12 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
     const matched = rawSoftRules.find((item) => item && item.key === fallback.key)
     softByKey.set(fallback.key, {
       key: fallback.key,
-      enabled: matched?.enabled !== false,
-      weight: clampNumber(matched?.weight, 0, 100, fallback.weight)
+      enabled: unavailableSoftKeys.has(fallback.key) ? false : matched ? matched.enabled !== false : fallback.enabled,
+      weight: scoringSoftKeys.has(fallback.key)
+        ? usesLegacyDefaultWeights
+          ? fallback.weight
+          : clampNumber(matched?.weight, 0, 100, fallback.weight)
+        : 0
     })
   }
 
@@ -655,12 +735,25 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
     if (!fallback) continue
     const fromRules = rawRules.find((item) => item && item.key === key) as Partial<RuleWeightRule> | undefined
     if (fromRules) {
+      const softKey = key as RuleWeightSoftKey
       normalizedRules.push({
         key,
-        enabled: fromRules.enabled !== false,
-        mode: fromRules.mode === 'hard' || fromRules.mode === 'soft' ? fromRules.mode : fallback.mode,
-        priority: clampNumber(fromRules.priority, 1, 4, fallback.priority),
-        weight: clampNumber(fromRules.weight, 0, 100, fallback.weight)
+        enabled:
+          fallback.mode === 'hard' && lockedHardKeys.has(key as RuleWeightHardKey)
+            ? true
+            : key === 'courseRelation' && fromRules.mode !== 'hard'
+              ? true
+            : fallback.mode === 'soft' && unavailableSoftKeys.has(softKey)
+              ? false
+              : fromRules.enabled !== false,
+        mode: fallback.mode,
+        priority: fallback.mode === 'hard' ? fallback.priority : 4,
+        weight:
+          fallback.mode === 'soft' && !scoringSoftKeys.has(softKey)
+            ? 0
+            : fallback.mode === 'soft' && usesLegacyDefaultWeights
+              ? fallback.weight
+              : clampNumber(fromRules.weight, 0, 100, fallback.weight)
       })
       continue
     }
@@ -671,7 +764,7 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
         key,
         enabled: fromHard.enabled,
         mode: 'hard',
-        priority: clampNumber(fromHard.priority, 1, 4, fallback.priority),
+        priority: fallback.priority,
         weight: 0
       })
       continue
@@ -697,7 +790,7 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
     .map((item) => ({
       key: item.key as RuleWeightHardKey,
       enabled: item.enabled,
-      priority: clampNumber(item.priority, 1, 4, 4)
+      priority: defaultRuleWeightConfig.hardRules.find((fallback) => fallback.key === item.key)?.priority || 4
     }))
 
   const normalizedSoftRules = normalizedRules
@@ -784,7 +877,11 @@ export function loadRuleSettingsSnapshot(): RuleSettingsSnapshot {
       ? parsed.teacherHourRules.filter((item) => isValidTeacherHourRule(item))
       : []
     const consecutiveSettings = normalizeConsecutiveSettings(parsed.consecutiveSettings)
-    const courseDefaultConfig = normalizeCourseDefaultConfig(parsed.courseDefaultConfig)
+    const parsedVersion = Number(parsed.version || 0)
+    const courseDefaultConfig =
+      parsedVersion < CURRENT_SNAPSHOT_VERSION && isLegacyCourseDefaultConfig(parsed.courseDefaultConfig)
+        ? cloneCourseDefaultConfig()
+        : normalizeCourseDefaultConfig(parsed.courseDefaultConfig)
     const ruleWeightConfigs = Array.isArray(parsed.ruleWeightConfigs)
       ? parsed.ruleWeightConfigs
           .map((item) => normalizeRuleWeightConfigRecord(item))
@@ -814,7 +911,7 @@ export function loadRuleSettingsSnapshot(): RuleSettingsSnapshot {
       teacherBanRules: cloneTeacherBanRules(teacherBanRules),
       teacherHourRules: cloneTeacherHourRules(teacherHourRules),
       consecutiveSettings: cloneConsecutiveSettings(consecutiveSettings),
-      courseDefaultConfig: { ...courseDefaultConfig },
+      courseDefaultConfig: cloneCourseDefaultConfig(courseDefaultConfig),
       ruleWeightConfigs: cloneRuleWeightConfigRecords(ruleWeightConfigs),
       _savedAt: snapshotSavedAt(parsed)
     }

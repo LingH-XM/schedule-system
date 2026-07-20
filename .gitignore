@@ -13,3 +13,15 @@ backend/solver/.venv/
 .venv/
 
 .DS_Store
+**/__pycache__/
+*.py[cod]
+.playwright-cli/
+output/
+outputs/
+exports/
+scripts/node_modules
+scripts/build_reading_dashboard.mjs
+scripts/create_reading_statistics_bar_chart.py
+scripts/create_reading_statistics_chart.py
+scripts/verify_reading_dashboard.mjs
+design-qa.md

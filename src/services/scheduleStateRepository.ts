@@ -12,6 +12,7 @@ export type SchedulePlan = {
 
 export type WorkbenchPersistSnapshot = {
   entries: Record<string, unknown>
+  publishedEntries?: Record<string, unknown>
   meta: Record<string, { savedAt: number; publishedAt: number }>
   drafts: Record<string, unknown>
   logs: Record<string, unknown[]>
@@ -21,6 +22,7 @@ export type WorkbenchPersistSnapshot = {
 const PLANS_LOCAL_KEY = 'schedule_plans_v1'
 const WORKBENCH_META_KEY = 'schedule_workbench_meta_v1'
 const WORKBENCH_PERSIST_KEY = 'schedule_workbench_saved_v1'
+const WORKBENCH_PUBLISHED_KEY = 'schedule_workbench_published_v1'
 const WORKBENCH_DRAFTS_KEY = 'schedule_workbench_drafts_v1'
 const WORKBENCH_LOGS_KEY = 'schedule_workbench_logs_v1'
 
@@ -47,15 +49,17 @@ function parsePlans(raw: string | null): SchedulePlan[] {
 }
 
 function plansSavedAt(plans: SchedulePlan[]): number {
+  if (plans.length === 0) return 0
   const maxIdTs = plans.reduce((max, item) => {
     const ts = Number(String(item.id).split('-')[0] || 0)
     return Number.isFinite(ts) ? Math.max(max, ts) : max
   }, 0)
-  return maxIdTs || Date.now()
+  return maxIdTs
 }
 
 function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
   let entries: Record<string, unknown> = {}
+  let publishedEntries: Record<string, unknown> = {}
   let meta: Record<string, { savedAt: number; publishedAt: number }> = {}
   let drafts: Record<string, unknown> = {}
   let logs: Record<string, unknown[]> = {}
@@ -67,6 +71,16 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
       if (parsed && typeof parsed === 'object') entries = parsed
     } catch {
       entries = {}
+    }
+  }
+
+  const publishedEntriesRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_PUBLISHED_KEY))
+  if (publishedEntriesRaw) {
+    try {
+      const parsed = JSON.parse(publishedEntriesRaw) as Record<string, unknown>
+      if (parsed && typeof parsed === 'object') publishedEntries = parsed
+    } catch {
+      publishedEntries = {}
     }
   }
 
@@ -118,11 +132,19 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     0,
     ...Object.values(meta).map((item) => Math.max(Number(item.savedAt || 0), Number(item.publishedAt || 0)))
   )
-  return { entries, meta, drafts, logs, _savedAt: maxSavedAt }
+  Object.entries(entries).forEach(([id, entry]) => {
+    if (publishedEntries[id] !== undefined || !entry || typeof entry !== 'object') return
+    const entryPublishedAt = Number((entry as { publishedAt?: unknown }).publishedAt || 0)
+    if (Math.max(entryPublishedAt, Number(meta[id]?.publishedAt || 0)) > 0) {
+      publishedEntries[id] = cloneWorkbenchValue(entry)
+    }
+  })
+  return { entries, publishedEntries, meta, drafts, logs, _savedAt: maxSavedAt }
 }
 
 function writeWorkbenchLocal(snapshot: WorkbenchPersistSnapshot): void {
   localStorage.setItem(withAccountStorageKey(WORKBENCH_PERSIST_KEY), JSON.stringify(snapshot.entries || {}))
+  localStorage.setItem(withAccountStorageKey(WORKBENCH_PUBLISHED_KEY), JSON.stringify(snapshot.publishedEntries || {}))
   localStorage.setItem(withAccountStorageKey(WORKBENCH_META_KEY), JSON.stringify(snapshot.meta || {}))
   localStorage.setItem(withAccountStorageKey(WORKBENCH_DRAFTS_KEY), JSON.stringify(snapshot.drafts || {}))
   localStorage.setItem(withAccountStorageKey(WORKBENCH_LOGS_KEY), JSON.stringify(snapshot.logs || {}))
@@ -195,11 +217,23 @@ export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSn
     const payload = (await response.json()) as Partial<WorkbenchPersistSnapshot>
     const apiState: WorkbenchPersistSnapshot = {
       entries: payload?.entries && typeof payload.entries === 'object' ? payload.entries : {},
+      publishedEntries:
+        payload?.publishedEntries && typeof payload.publishedEntries === 'object'
+          ? (payload.publishedEntries as WorkbenchPersistSnapshot['publishedEntries'])
+          : {},
       meta: payload?.meta && typeof payload.meta === 'object' ? (payload.meta as WorkbenchPersistSnapshot['meta']) : {},
       drafts: payload?.drafts && typeof payload.drafts === 'object' ? (payload.drafts as WorkbenchPersistSnapshot['drafts']) : {},
       logs: payload?.logs && typeof payload.logs === 'object' ? (payload.logs as WorkbenchPersistSnapshot['logs']) : {},
       _savedAt: typeof payload?._savedAt === 'number' ? payload._savedAt : 0
     }
+    Object.entries(apiState.entries).forEach(([id, entry]) => {
+      if (apiState.publishedEntries?.[id] !== undefined || !entry || typeof entry !== 'object') return
+      const entryPublishedAt = Number((entry as { publishedAt?: unknown }).publishedAt || 0)
+      if (Math.max(entryPublishedAt, Number(apiState.meta[id]?.publishedAt || 0)) > 0) {
+        const publishedEntries = apiState.publishedEntries as Record<string, unknown>
+        publishedEntries[id] = cloneWorkbenchValue(entry)
+      }
+    })
     const localSavedAt = Number(local._savedAt || 0)
     const apiSavedAt = Number(apiState._savedAt || 0)
     const latest = localSavedAt >= apiSavedAt ? local : apiState
@@ -214,6 +248,7 @@ export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSn
 export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSnapshot): Promise<void> {
   const payload: WorkbenchPersistSnapshot = {
     entries: snapshot.entries || {},
+    publishedEntries: snapshot.publishedEntries || {},
     meta: snapshot.meta || {},
     drafts: snapshot.drafts || {},
     logs: snapshot.logs || {},
@@ -230,4 +265,82 @@ export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSna
   } catch (error) {
     console.warn('[ScheduleState] 保存工作台状态失败，已保留本地。', error)
   }
+}
+
+function cloneWorkbenchValue<T>(value: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(value)
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+export async function duplicateWorkbenchPlanState(sourcePlanId: string, targetPlanId: string): Promise<boolean> {
+  const sourceId = String(sourcePlanId || '').trim()
+  const targetId = String(targetPlanId || '').trim()
+  if (!sourceId || !targetId || sourceId === targetId) return false
+
+  const snapshot = await loadWorkbenchPersistSnapshot()
+  const sourceEntry = snapshot.entries?.[sourceId]
+  const sourcePublishedEntry = snapshot.publishedEntries?.[sourceId]
+  const sourceMeta = snapshot.meta?.[sourceId]
+  const sourceDraft = snapshot.drafts?.[sourceId]
+  const sourceLogs = snapshot.logs?.[sourceId]
+  const sourceScheduleEntry = sourceEntry ?? sourcePublishedEntry
+  const hasState =
+    sourceEntry !== undefined ||
+    sourcePublishedEntry !== undefined ||
+    sourceMeta !== undefined ||
+    sourceDraft !== undefined ||
+    sourceLogs !== undefined
+  if (!hasState) return false
+
+  const now = Date.now()
+  const entries = { ...(snapshot.entries || {}) }
+  const publishedEntries = { ...(snapshot.publishedEntries || {}) }
+  const meta = { ...(snapshot.meta || {}) }
+  const drafts = { ...(snapshot.drafts || {}) }
+  const logs = { ...(snapshot.logs || {}) }
+
+  if (sourceScheduleEntry !== undefined) {
+    const copiedEntry = cloneWorkbenchValue(sourceScheduleEntry)
+    if (copiedEntry && typeof copiedEntry === 'object') {
+      Object.assign(copiedEntry as Record<string, unknown>, {
+        savedAt: now,
+        publishedAt: undefined
+      })
+    }
+    entries[targetId] = copiedEntry
+  }
+  delete publishedEntries[targetId]
+  meta[targetId] = { savedAt: now, publishedAt: 0 }
+  if (sourceDraft !== undefined) drafts[targetId] = cloneWorkbenchValue(sourceDraft)
+  if (sourceLogs !== undefined) logs[targetId] = cloneWorkbenchValue(sourceLogs)
+
+  await saveWorkbenchPersistSnapshot({ entries, publishedEntries, meta, drafts, logs, _savedAt: now })
+  return sourceScheduleEntry !== undefined
+}
+
+export async function deleteWorkbenchPlanState(planIdValue: string): Promise<boolean> {
+  const targetId = String(planIdValue || '').trim()
+  if (!targetId) return false
+
+  const snapshot = await loadWorkbenchPersistSnapshot()
+  const entries = { ...(snapshot.entries || {}) }
+  const publishedEntries = { ...(snapshot.publishedEntries || {}) }
+  const meta = { ...(snapshot.meta || {}) }
+  const drafts = { ...(snapshot.drafts || {}) }
+  const logs = { ...(snapshot.logs || {}) }
+  const hasState =
+    entries[targetId] !== undefined ||
+    publishedEntries[targetId] !== undefined ||
+    meta[targetId] !== undefined ||
+    drafts[targetId] !== undefined ||
+    logs[targetId] !== undefined
+  if (!hasState) return false
+
+  delete entries[targetId]
+  delete publishedEntries[targetId]
+  delete meta[targetId]
+  delete drafts[targetId]
+  delete logs[targetId]
+  await saveWorkbenchPersistSnapshot({ entries, publishedEntries, meta, drafts, logs, _savedAt: Date.now() })
+  return true
 }

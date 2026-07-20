@@ -8,6 +8,7 @@ type TeacherRecord = {
   campusId?: unknown
   subject?: unknown
   subjectGroup?: unknown
+  weeklyLessonRequirement?: unknown
 }
 
 type CourseItem = {
@@ -93,6 +94,7 @@ export class StructuredDataSyncService {
     campusId: string
     subject: string
     subjectGroup: string
+    weeklyLessonRequirement: number
   }> {
     const records = Array.isArray(input) ? (input as TeacherRecord[]) : []
     return records
@@ -101,7 +103,8 @@ export class StructuredDataSyncService {
         name: this.toStr(item.name),
         campusId: this.toStr(item.campusId),
         subject: this.toStr(item.subject),
-        subjectGroup: this.toStr(item.subjectGroup)
+        subjectGroup: this.toStr(item.subjectGroup),
+        weeklyLessonRequirement: this.toInt(item.weeklyLessonRequirement)
       }))
       .filter((item) => Boolean(item.teacherId && item.name))
   }

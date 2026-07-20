@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -18,11 +19,17 @@ class SolverLesson(BaseModel):
     teacherNames: list[str] | None = None
     color: str = "#5b8fd1"
     isCombined: bool | None = None
+    isOddEven: bool | None = None
+    oddCourseId: str | None = None
+    evenCourseId: str | None = None
+    oddCourseName: str | None = None
+    evenCourseName: str | None = None
     locked: bool | None = None
 
 
 class SolveDemand(BaseModel):
     assignmentKey: str
+    sourceClassId: str | None = None
     remaining: int = 0
     targetClassIds: list[str] = Field(default_factory=list)
     lessonsByClass: dict[str, SolverLesson] = Field(default_factory=dict)
@@ -68,6 +75,7 @@ class RuleOptions(BaseModel):
     enableCourseDefault: bool | None = None
     enableMainSecondary: bool | None = None
     enableOddEven: bool | None = None
+    enableCourseRelation: bool | None = None
     consecutivePreferredWeight: int | None = None
 
 
@@ -76,6 +84,13 @@ class ConsecutiveConstraint(BaseModel):
     courseIds: list[str] = Field(default_factory=list)
     weeklyConsecutiveCount: int = 0
     preferredDays: list[str] = Field(default_factory=list)
+
+
+class CourseRelationConstraint(BaseModel):
+    classId: str
+    courseAIds: list[str] = Field(default_factory=list)
+    courseBIds: list[str] = Field(default_factory=list)
+    relationType: str
 
 
 class SmartSolveRequest(BaseModel):
@@ -90,6 +105,7 @@ class SmartSolveRequest(BaseModel):
     teacherRuleOptions: TeacherRuleOptions | None = None
     ruleOptions: RuleOptions | None = None
     consecutiveConstraints: list[ConsecutiveConstraint] | None = None
+    courseRelationConstraints: list[CourseRelationConstraint] | None = None
     scheduleMap: dict[str, dict[str, SolverLesson | None]]
     demands: list[SolveDemand]
 
@@ -112,6 +128,15 @@ def lesson_teachers(lesson: SolverLesson | None) -> list[str]:
     if from_list:
         return from_list
     return norm_teachers(lesson.teacher)
+
+
+def lesson_course_ids(lesson: SolverLesson | None) -> set[str]:
+    if lesson is None:
+        return set()
+    values = lesson.courseIds or []
+    if not values:
+        values = [lesson.courseId or lesson.assignmentKey]
+    return {str(value or "").strip() for value in values if str(value or "").strip()}
 
 
 def sync_teacher_key(teachers: list[str]) -> str:
@@ -137,21 +162,45 @@ def parse_slot(slot_key: str) -> tuple[int, str] | None:
     return period, day
 
 
-def rule_pair_enabled(rule: dict[str, Any] | None, course_id: str, main_ids: set[str], secondary_ids: set[str]) -> bool:
+def rule_pair_value(rule: dict[str, Any] | None, course_id: str, main_ids: set[str], secondary_ids: set[str]) -> str:
     if not isinstance(rule, dict) or not bool(rule.get("enabled")):
-        return False
-    main_text = str(rule.get("main") or "")
-    secondary_text = str(rule.get("secondary") or "")
+        return ""
+    main_text = str(rule.get("main") or "").strip()
+    secondary_text = str(rule.get("secondary") or "").strip()
     has_main_secondary_split = bool(main_ids) or bool(secondary_ids)
     if course_id in main_ids:
-        return main_text not in ("", "无特殊要求", "否", "不限制")
+        return main_text
     if course_id in secondary_ids:
-        return secondary_text not in ("", "无特殊要求", "否", "不限制")
+        return secondary_text
     if has_main_secondary_split:
         # When main/secondary sets are configured, only classified courses should hit pair rules.
-        return False
-    fallback = main_text or secondary_text
-    return fallback not in ("", "无特殊要求", "否", "不限制")
+        return ""
+    return main_text or secondary_text
+
+
+def rule_pair_has_value(
+    rule: dict[str, Any] | None,
+    course_id: str,
+    main_ids: set[str],
+    secondary_ids: set[str],
+    accepted: set[str],
+) -> bool:
+    return rule_pair_value(rule, course_id, main_ids, secondary_ids) in accepted
+
+
+def option_bool(options: dict[str, Any], key: str, default: bool) -> bool:
+    value = options.get(key)
+    return default if value is None else bool(value)
+
+
+def option_int(options: dict[str, Any], key: str, default: int) -> int:
+    value = options.get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @app.post("/solve-cpsat")
@@ -160,21 +209,32 @@ def solve(payload: SmartSolveRequest):
     def push_log(phase: str, message: str) -> None:
         logs.append({"phase": phase, "message": message, "at": datetime.now().isoformat()})
 
-    class_ids = [c for c in payload.classIds if c]
+    class_ids = list(dict.fromkeys(str(c or "").strip() for c in payload.classIds if str(c or "").strip()))
     if not class_ids:
         raise HTTPException(status_code=400, detail="classIds is empty")
-    slot_keys = [s for s in payload.slotKeys if s]
+    slot_keys = list(dict.fromkeys(str(s or "").strip() for s in payload.slotKeys if str(s or "").strip()))
     if not slot_keys:
         raise HTTPException(status_code=400, detail="slotKeys is empty")
+    invalid_slot_keys = [slot for slot in slot_keys if parse_slot(slot) is None]
+    if invalid_slot_keys:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_SLOT_KEY",
+                "message": "节次槽位格式不正确，应使用“节次-星期”格式。",
+                "slots": invalid_slot_keys[:10],
+            },
+        )
 
     rule_options = payload.ruleOptions.model_dump() if payload.ruleOptions else {}
-    enable_global_fixed_point = bool(rule_options.get("enableGlobalFixedPoint", True))
-    enable_combine_course = bool(rule_options.get("enableCombineCourse", True))
-    enable_course_area = bool(rule_options.get("enableCourseArea", True))
-    enable_course_ban = bool(rule_options.get("enableCourseBan", True))
-    enable_course_default = bool(rule_options.get("enableCourseDefault", True))
-    enable_main_secondary = bool(rule_options.get("enableMainSecondary", True))
-    enable_odd_even = bool(rule_options.get("enableOddEven", True))
+    enable_global_fixed_point = option_bool(rule_options, "enableGlobalFixedPoint", True)
+    enable_combine_course = option_bool(rule_options, "enableCombineCourse", True)
+    enable_course_area = option_bool(rule_options, "enableCourseArea", True)
+    enable_course_ban = option_bool(rule_options, "enableCourseBan", True)
+    enable_course_default = option_bool(rule_options, "enableCourseDefault", True)
+    enable_main_secondary = option_bool(rule_options, "enableMainSecondary", True)
+    enable_odd_even = option_bool(rule_options, "enableOddEven", True)
+    enable_course_relation = option_bool(rule_options, "enableCourseRelation", True)
     fixed_set = set(payload.fixedSlotKeys or []) if enable_global_fixed_point else set()
     push_log(
         "规则",
@@ -186,6 +246,7 @@ def solve(payload: SmartSolveRequest):
         + f"，课程默认={'开' if enable_course_default else '关'}"
         + f"，主副科={'开' if enable_main_secondary else '关'}"
         + f"，单双周={'开' if enable_odd_even else '关'}"
+        + f"，课程关系={'开' if enable_course_relation else '关'}"
         + f"，固定点命中={len(fixed_set)}。",
     )
     class_set = set(class_ids)
@@ -211,16 +272,19 @@ def solve(payload: SmartSolveRequest):
             lesson = grid.get(slot)
             occupied[(class_id, slot)] = lesson is not None
             for t in lesson_teachers(lesson):
-                existing_teacher_occ[(t, slot)] = existing_teacher_occ.get((t, slot), 0) + 1
-                meta = slot_meta.get(slot)
-                if meta:
-                    day = meta[1]
-                    key = (t, day)
-                    existing_teacher_occ_by_day[key] = existing_teacher_occ_by_day.get(key, 0) + 1
+                # 合班课会在多个班级单元格中重复保存；教师占用应按“教师+节次”去重。
+                existing_teacher_occ[(t, slot)] = 1
+    for teacher, slot in existing_teacher_occ:
+        meta = slot_meta.get(slot)
+        if not meta:
+            continue
+        day = meta[1]
+        key = (teacher, day)
+        existing_teacher_occ_by_day[key] = existing_teacher_occ_by_day.get(key, 0) + 1
 
     day_order = {"周一": 1, "周二": 2, "周三": 3, "周四": 4, "周五": 5, "周六": 6, "周日": 7}
     default_rules_raw = payload.defaultRules.model_dump() if payload.defaultRules else {}
-    default_rules_enabled = bool(default_rules_raw.get("enabled", True))
+    default_rules_enabled = option_bool(default_rules_raw, "enabled", True)
     main_course_ids = {str(x).strip() for x in (default_rules_raw.get("mainCourseIds") or []) if str(x).strip()}
     secondary_course_ids = {str(x).strip() for x in (default_rules_raw.get("secondaryCourseIds") or []) if str(x).strip()}
     noon_boundary_by_class = payload.noonBoundaryByClass or {}
@@ -236,16 +300,26 @@ def solve(payload: SmartSolveRequest):
         if not target_ids:
             continue
 
-        demand_teachers = norm_teachers(demand.teacherNames)
-        if not demand_teachers:
-            # fallback collect from per-class lesson
-            t_set = set()
-            for c in target_ids:
-                item = demand.lessonsByClass.get(c)
-                if item:
-                    for t in lesson_teachers(item):
-                        t_set.add(t)
-            demand_teachers = sorted(t_set)
+        missing_lessons = [class_id for class_id in target_ids if demand.lessonsByClass.get(class_id) is None]
+        if missing_lessons:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "MISSING_LESSON_TEMPLATE",
+                    "message": "课程需求缺少目标班级的课程模板。",
+                    "assignmentKey": demand.assignmentKey,
+                    "classIds": missing_lessons,
+                },
+            )
+
+        # Always include teachers from every target class. For combined lessons,
+        # demand.teacherNames may only describe the source class.
+        teacher_set = set(norm_teachers(demand.teacherNames))
+        for c in target_ids:
+            item = demand.lessonsByClass.get(c)
+            if item:
+                teacher_set.update(lesson_teachers(item))
+        demand_teachers = sorted(teacher_set)
 
         forbidden_map = demand.forbiddenSlotsByClass or {}
         build_blockers = {
@@ -294,6 +368,17 @@ def solve(payload: SmartSolveRequest):
                             (demand.lessonsByClass.get(c).courseId if demand.lessonsByClass.get(c) else "")
                             or demand.assignmentKey
                             or "unknown"
+                        )
+                        for c in target_ids
+                    },
+                    "course_ids_by_class": {
+                        c: sorted(
+                            lesson_course_ids(demand.lessonsByClass.get(c))
+                            or {
+                                (demand.lessonsByClass.get(c).courseId if demand.lessonsByClass.get(c) else "")
+                                or demand.assignmentKey
+                                or "unknown"
+                            }
                         )
                         for c in target_ids
                     },
@@ -370,9 +455,9 @@ def solve(payload: SmartSolveRequest):
                     model.Add(sum(vars_ts) <= cap)
 
     teacher_rule_options = payload.teacherRuleOptions.model_dump() if payload.teacherRuleOptions else {}
-    enable_teacher_mutual = bool(teacher_rule_options.get("enableTeacherMutual", True))
-    week_distribution_weight = int(teacher_rule_options.get("weekDistributionWeight") or 60)
-    day_distribution_weight = int(teacher_rule_options.get("dayDistributionWeight") or 40)
+    enable_teacher_mutual = option_bool(teacher_rule_options, "enableTeacherMutual", True)
+    week_distribution_weight = option_int(teacher_rule_options, "weekDistributionWeight", 45)
+    day_distribution_weight = option_int(teacher_rule_options, "dayDistributionWeight", 25)
     week_distribution_weight = max(0, min(1000, week_distribution_weight))
     day_distribution_weight = max(0, min(1000, day_distribution_weight))
 
@@ -472,34 +557,33 @@ def solve(payload: SmartSolveRequest):
                     rhs = 0
                 model.Add(sum(vars_day) <= rhs)
 
-    # teacher max consecutive lessons (per teacher per class)
+    # teacher max consecutive lessons across all classes.
+    # A teacher moving between classes still counts as consecutive teaching;
+    # combined-class variables are deduplicated by (unit, slot).
+    teacher_consecutive_constraints = 0
     for teacher, conf in teacher_hour_constraints.items():
         max_consecutive = conf.get("maxConsecutiveLessons")
         if max_consecutive is None:
             continue
         window_size = max_consecutive + 1
-        for class_id in class_ids:
-            class_grid = payload.scheduleMap.get(class_id, {})
-            for day, slots in slots_by_day.items():
-                if len(slots) < window_size:
+        for _day, slots in slots_by_day.items():
+            if len(slots) < window_size:
+                continue
+            for start in range(0, len(slots) - window_size + 1):
+                window = slots[start : start + window_size]
+                var_indexes: set[tuple[int, int]] = set()
+                existing_window = 0
+                for _, s_idx, slot in window:
+                    existing_window += int(existing_teacher_occ.get((teacher, slot), 0) > 0)
+                    for u_idx, unit in enumerate(units):
+                        if teacher in unit["teachers"] and (u_idx, s_idx) in x:
+                            var_indexes.add((u_idx, s_idx))
+                if not var_indexes:
                     continue
-                for start in range(0, len(slots) - window_size + 1):
-                    window = slots[start : start + window_size]
-                    vars_window: list[cp_model.IntVar] = []
-                    existing_window = 0
-                    for _, s_idx, slot in window:
-                        lesson = class_grid.get(slot)
-                        if teacher in lesson_teachers(lesson):
-                            existing_window += 1
-                        for u_idx, unit in enumerate(units):
-                            if class_id in unit["target_ids"] and teacher in unit["teachers"] and (u_idx, s_idx) in x:
-                                vars_window.append(x[(u_idx, s_idx)])
-                    if not vars_window:
-                        continue
-                    rhs = max_consecutive - existing_window
-                    if rhs < 0:
-                        rhs = 0
-                    model.Add(sum(vars_window) <= rhs)
+                rhs = max(0, max_consecutive - existing_window)
+                model.Add(sum(x[index] for index in sorted(var_indexes)) <= rhs)
+                teacher_consecutive_constraints += 1
+    push_log("规则", f"教师连续课时硬约束：新增 {teacher_consecutive_constraints} 条（跨班级统一计算）。")
 
     existing_by_class_course_day: dict[tuple[str, str, str], int] = {}
     existing_by_class_course_day_teacher: dict[tuple[str, str, str, str], int] = {}
@@ -536,6 +620,119 @@ def solve(payload: SmartSolveRequest):
                     key_slot_teacher,
                     0,
                 ) + 1
+
+    course_relation_constraints_added = 0
+    course_relation_existing_conflicts: list[dict[str, Any]] = []
+
+    def relation_slot_expr(class_id: str, course_ids: set[str], slot: str, s_idx: int) -> cp_model.LinearExpr | int:
+        existing = int(bool(lesson_course_ids(payload.scheduleMap.get(class_id, {}).get(slot)) & course_ids))
+        indexes: set[tuple[int, int]] = set()
+        for u_idx, unit in enumerate(units):
+            if class_id not in unit["target_ids"] or (u_idx, s_idx) not in x:
+                continue
+            unit_course_ids = set(unit["course_ids_by_class"].get(class_id, []))
+            if unit_course_ids & course_ids:
+                indexes.add((u_idx, s_idx))
+        if not indexes:
+            return existing
+        return existing + sum(x[index] for index in sorted(indexes))
+
+    def relation_day_presence(
+        class_id: str,
+        course_ids: set[str],
+        day: str,
+        relation_idx: int,
+        side: str,
+    ) -> cp_model.IntVar | int:
+        class_grid = payload.scheduleMap.get(class_id, {})
+        if any(lesson_course_ids(class_grid.get(slot)) & course_ids for _, _, slot in slots_by_day.get(day, [])):
+            return 1
+        indexes: set[tuple[int, int]] = set()
+        for _, s_idx, _ in slots_by_day.get(day, []):
+            for u_idx, unit in enumerate(units):
+                if class_id not in unit["target_ids"] or (u_idx, s_idx) not in x:
+                    continue
+                if set(unit["course_ids_by_class"].get(class_id, [])) & course_ids:
+                    indexes.add((u_idx, s_idx))
+        if not indexes:
+            return 0
+        active = model.NewBoolVar(f"course_relation_{relation_idx}_{class_id}_{day}_{side}")
+        terms_local = [x[index] for index in sorted(indexes)]
+        model.Add(sum(terms_local) >= 1).OnlyEnforceIf(active)
+        model.Add(sum(terms_local) == 0).OnlyEnforceIf(active.Not())
+        return active
+
+    if enable_course_relation:
+        for relation_idx, relation in enumerate(payload.courseRelationConstraints or []):
+            class_id = str(relation.classId or "").strip()
+            course_a_ids = {str(value or "").strip() for value in relation.courseAIds or [] if str(value or "").strip()}
+            course_b_ids = {str(value or "").strip() for value in relation.courseBIds or [] if str(value or "").strip()}
+            relation_type = str(relation.relationType or "").strip()
+            if class_id not in class_set or not course_a_ids or not course_b_ids:
+                continue
+            if relation_type == "前后互斥":
+                for day, day_slots in slots_by_day.items():
+                    for slot_idx in range(len(day_slots) - 1):
+                        period_a, s_idx_a, slot_a = day_slots[slot_idx]
+                        period_b, s_idx_b, slot_b = day_slots[slot_idx + 1]
+                        if period_b - period_a != 1:
+                            continue
+                        pairs = [
+                            (
+                                relation_slot_expr(class_id, course_a_ids, slot_a, s_idx_a),
+                                relation_slot_expr(class_id, course_b_ids, slot_b, s_idx_b),
+                            ),
+                            (
+                                relation_slot_expr(class_id, course_b_ids, slot_a, s_idx_a),
+                                relation_slot_expr(class_id, course_a_ids, slot_b, s_idx_b),
+                            ),
+                        ]
+                        for left, right in pairs:
+                            if isinstance(left, int) and isinstance(right, int):
+                                if left + right > 1:
+                                    course_relation_existing_conflicts.append(
+                                        {
+                                            "classId": class_id,
+                                            "relationType": relation_type,
+                                            "day": day,
+                                            "slots": [slot_a, slot_b],
+                                            "courseAIds": sorted(course_a_ids),
+                                            "courseBIds": sorted(course_b_ids),
+                                        }
+                                    )
+                                continue
+                            model.Add(left + right <= 1)
+                            course_relation_constraints_added += 1
+            elif relation_type == "同天互斥":
+                for day in slots_by_day:
+                    active_a = relation_day_presence(class_id, course_a_ids, day, relation_idx, "a")
+                    active_b = relation_day_presence(class_id, course_b_ids, day, relation_idx, "b")
+                    if isinstance(active_a, int) and isinstance(active_b, int):
+                        if active_a + active_b > 1:
+                            course_relation_existing_conflicts.append(
+                                {
+                                    "classId": class_id,
+                                    "relationType": relation_type,
+                                    "day": day,
+                                    "courseAIds": sorted(course_a_ids),
+                                    "courseBIds": sorted(course_b_ids),
+                                }
+                            )
+                        continue
+                    model.Add(active_a + active_b <= 1)
+                    course_relation_constraints_added += 1
+
+    if course_relation_existing_conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "COURSE_RELATION_EXISTING_CONFLICT",
+                "message": "已排课表违反课程关系规则，请先调整后再智能排课。",
+                "conflictCount": len(course_relation_existing_conflicts),
+                "conflicts": course_relation_existing_conflicts[:10],
+            },
+        )
+    push_log("规则", f"课程关系硬约束：新增 {course_relation_constraints_added} 条。")
 
     day_keys = sorted(slots_by_day.keys(), key=lambda d: day_order.get(d, 99))
     consecutive_constraints_raw = payload.consecutiveConstraints or []
@@ -578,6 +775,61 @@ def solve(payload: SmartSolveRequest):
             return False
         return day in days
 
+    course_default_objective_terms: list[cp_model.LinearExpr | int] = []
+
+    def course_day_presence(
+        class_id: str,
+        course_key: str,
+        day: str,
+        *,
+        teacher: str | None = None,
+        name_prefix: str,
+    ) -> cp_model.IntVar | int:
+        if teacher:
+            existing_count = existing_by_class_course_day_teacher.get((class_id, course_key, day, teacher), 0)
+        else:
+            existing_count = existing_by_class_course_day.get((class_id, course_key, day), 0)
+        if existing_count > 0:
+            return 1
+
+        indexes: set[tuple[int, int]] = set()
+        for _, s_idx, _ in slots_by_day.get(day, []):
+            for u_idx, unit in enumerate(units):
+                if unit["course_key_by_class"].get(class_id) != course_key:
+                    continue
+                if teacher and teacher not in unit["teachers"]:
+                    continue
+                if (u_idx, s_idx) in x:
+                    indexes.add((u_idx, s_idx))
+        if not indexes:
+            return 0
+
+        active = model.NewBoolVar(f"{name_prefix}_{class_id}_{course_key}_{teacher or 'all'}_{day}")
+        active_terms = [x[index] for index in sorted(indexes)]
+        model.Add(sum(active_terms) >= 1).OnlyEnforceIf(active)
+        model.Add(sum(active_terms) == 0).OnlyEnforceIf(active.Not())
+        return active
+
+    def both_active_term(
+        left: cp_model.LinearExpr | int,
+        right: cp_model.LinearExpr | int,
+        *,
+        name: str,
+    ) -> cp_model.LinearExpr | int:
+        left_is_int = isinstance(left, int)
+        right_is_int = isinstance(right, int)
+        if left_is_int and right_is_int:
+            return 1 if left == 1 and right == 1 else 0
+        if left_is_int:
+            return right if left == 1 else 0
+        if right_is_int:
+            return left if right == 1 else 0
+        both = model.NewBoolVar(name)
+        model.Add(both <= left)
+        model.Add(both <= right)
+        model.Add(both >= left + right - 1)
+        return both
+
     sync_added_constraints = 0
     sync_pair_constraints = 0
     sync_alternating_constraints = 0
@@ -587,7 +839,13 @@ def solve(payload: SmartSolveRequest):
             for class_id, course_key in unit["course_key_by_class"].items():
                 if not course_key:
                     continue
-                if not rule_pair_enabled(default_rules_raw.get("syncStart"), course_key, main_course_ids, secondary_course_ids):
+                if not rule_pair_has_value(
+                    default_rules_raw.get("syncStart"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"必须一致", "启用"},
+                ):
                     continue
                 for teacher in unit["teachers"]:
                     if not teacher:
@@ -597,7 +855,13 @@ def solve(payload: SmartSolveRequest):
         for class_id, course_key, _day, teacher in existing_by_class_course_day_teacher.keys():
             if not course_key or not teacher:
                 continue
-            if not rule_pair_enabled(default_rules_raw.get("syncStart"), course_key, main_course_ids, secondary_course_ids):
+            if not rule_pair_has_value(
+                default_rules_raw.get("syncStart"),
+                course_key,
+                main_course_ids,
+                secondary_course_ids,
+                {"必须一致", "启用"},
+            ):
                 continue
             course_to_classes.setdefault((course_key, teacher), set()).add(class_id)
 
@@ -746,21 +1010,30 @@ def solve(payload: SmartSolveRequest):
                         else:
                             day_active_vars[day] = both_single
 
-                    for idx in range(len(day_keys) - 1):
-                        day_a = day_keys[idx]
-                        day_b = day_keys[idx + 1]
-                        order_a = day_order_vars.get(day_a)
-                        order_b = day_order_vars.get(day_b)
-                        active_a = day_active_vars.get(day_a)
-                        active_b = day_active_vars.get(day_b)
-                        if order_a is None or order_b is None or active_a is None or active_b is None:
-                            continue
-                        both_days_active = model.NewBoolVar(f"sync_alt_active_{class_a}_{class_b}_{course_key}_{teacher}_{day_a}_{day_b}")
-                        model.Add(both_days_active <= active_a)
-                        model.Add(both_days_active <= active_b)
-                        model.Add(both_days_active >= active_a + active_b - 1)
-                        model.Add(order_a + order_b == 1).OnlyEnforceIf(both_days_active)
-                        sync_alternating_constraints += 1
+                    active_days = [day for day in day_keys if day in day_order_vars and day in day_active_vars]
+                    for left_idx in range(len(active_days) - 1):
+                        for right_idx in range(left_idx + 1, len(active_days)):
+                            day_a = active_days[left_idx]
+                            day_b = active_days[right_idx]
+                            order_a = day_order_vars[day_a]
+                            order_b = day_order_vars[day_b]
+                            active_a = day_active_vars[day_a]
+                            active_b = day_active_vars[day_b]
+                            middle_days = active_days[left_idx + 1 : right_idx]
+                            middle_active = [day_active_vars[day] for day in middle_days]
+                            next_active_pair = model.NewBoolVar(
+                                f"sync_alt_active_{class_a}_{class_b}_{course_key}_{teacher}_{day_a}_{day_b}"
+                            )
+                            model.Add(next_active_pair <= active_a)
+                            model.Add(next_active_pair <= active_b)
+                            for active_mid in middle_active:
+                                model.Add(next_active_pair + active_mid <= 1)
+                            model.Add(
+                                next_active_pair
+                                >= active_a + active_b - 1 - (sum(middle_active) if middle_active else 0)
+                            )
+                            model.Add(order_a + order_b == 1).OnlyEnforceIf(next_active_pair)
+                            sync_alternating_constraints += 1
 
         # 教案齐头补充：同一天内同班同课程要么仅 1 节，要么 2 节且必须连排。
         # 实现方式：任意两个“非相邻节次”不能同时出现该课程。
@@ -778,7 +1051,13 @@ def solve(payload: SmartSolveRequest):
                 }
             )
             for course_key, teacher in course_teacher_keys:
-                if not rule_pair_enabled(default_rules_raw.get("syncStart"), course_key, main_course_ids, secondary_course_ids):
+                if not rule_pair_has_value(
+                    default_rules_raw.get("syncStart"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"必须一致", "启用"},
+                ):
                     continue
                 for day in day_keys:
                     slots = slots_by_day.get(day, [])
@@ -856,7 +1135,74 @@ def solve(payload: SmartSolveRequest):
         + f"，新增 {sync_alternating_constraints} 条先后对调约束。",
     )
 
-    distribution_constraints = 0
+    sync_preference_terms = 0
+    sync_preference_weight = 50
+    if default_rules_enabled:
+        soft_course_to_classes: dict[tuple[str, str], set[str]] = {}
+        for unit in units:
+            for class_id, course_key in unit["course_key_by_class"].items():
+                if not course_key or not rule_pair_has_value(
+                    default_rules_raw.get("syncStart"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"尽量一致"},
+                ):
+                    continue
+                for teacher in unit["teachers"]:
+                    if teacher:
+                        soft_course_to_classes.setdefault((course_key, teacher), set()).add(class_id)
+        for class_id, course_key, _day, teacher in existing_by_class_course_day_teacher.keys():
+            if not course_key or not teacher or not rule_pair_has_value(
+                default_rules_raw.get("syncStart"),
+                course_key,
+                main_course_ids,
+                secondary_course_ids,
+                {"尽量一致"},
+            ):
+                continue
+            soft_course_to_classes.setdefault((course_key, teacher), set()).add(class_id)
+
+        for (course_key, teacher), class_group in soft_course_to_classes.items():
+            class_list = sorted(class_group)
+            for left_index in range(len(class_list) - 1):
+                for right_index in range(left_index + 1, len(class_list)):
+                    class_a = class_list[left_index]
+                    class_b = class_list[right_index]
+                    for day in day_keys:
+                        active_a = course_day_presence(
+                            class_a,
+                            course_key,
+                            day,
+                            teacher=teacher,
+                            name_prefix="sync_pref_a",
+                        )
+                        active_b = course_day_presence(
+                            class_b,
+                            course_key,
+                            day,
+                            teacher=teacher,
+                            name_prefix="sync_pref_b",
+                        )
+                        matched = both_active_term(
+                            active_a,
+                            active_b,
+                            name=f"sync_pref_both_{class_a}_{class_b}_{course_key}_{teacher}_{day}",
+                        )
+                        if isinstance(matched, int):
+                            if matched:
+                                course_default_objective_terms.append(sync_preference_weight)
+                                sync_preference_terms += 1
+                        else:
+                            course_default_objective_terms.append(sync_preference_weight * matched)
+                            sync_preference_terms += 1
+    push_log(
+        "规则",
+        f"教案齐头软偏好：加入 {sync_preference_terms} 个同日进度目标项（权重={sync_preference_weight}）。",
+    )
+
+    distribution_preference_terms = 0
+    distribution_preference_weight = 60
     if default_rules_enabled:
         for class_id in class_ids:
             course_keys = sorted(
@@ -867,26 +1213,50 @@ def solve(payload: SmartSolveRequest):
                 }
             )
             for course_key in course_keys:
-                if not rule_pair_enabled(default_rules_raw.get("distribution"), course_key, main_course_ids, secondary_course_ids):
+                preference = rule_pair_value(default_rules_raw.get("distribution"), course_key, main_course_ids, secondary_course_ids)
+                if preference not in {
+                    "尽量分散到不同天",
+                    "尽量均匀分散到整周",
+                    "尽量集中在较少天",
+                    "尽量在一上午/一下午集中上完",
+                    "优先安排在周中",
+                    "优先排在周中时段",
+                }:
                     continue
                 for day in day_keys:
-                    vars_day: list[cp_model.IntVar] = []
-                    for _, s_idx, _ in slots_by_day.get(day, []):
-                        for u_idx, unit in enumerate(units):
-                            if unit["course_key_by_class"].get(class_id) == course_key and (u_idx, s_idx) in x:
-                                vars_day.append(x[(u_idx, s_idx)])
-                    existing_day = existing_by_class_course_day.get((class_id, course_key, day), 0)
-                    if vars_day:
-                        model.Add(sum(vars_day) + existing_day <= 1)
-                        distribution_constraints += 1
-    push_log("规则", f"分散方式硬约束：新增 {distribution_constraints} 条。")
+                    active = course_day_presence(
+                        class_id,
+                        course_key,
+                        day,
+                        name_prefix="course_week_pref",
+                    )
+                    multiplier = 0
+                    if preference in {"尽量分散到不同天", "尽量均匀分散到整周"}:
+                        multiplier = 1
+                    elif preference in {"尽量集中在较少天", "尽量在一上午/一下午集中上完"}:
+                        multiplier = -1
+                    elif preference in {"优先安排在周中", "优先排在周中时段"} and day in {"周二", "周三", "周四"}:
+                        multiplier = 1
+                    if multiplier == 0:
+                        continue
+                    if isinstance(active, int):
+                        if active:
+                            course_default_objective_terms.append(multiplier * distribution_preference_weight)
+                            distribution_preference_terms += 1
+                    else:
+                        course_default_objective_terms.append(multiplier * distribution_preference_weight * active)
+                        distribution_preference_terms += 1
+    push_log(
+        "规则",
+        f"课程周分布软偏好：加入 {distribution_preference_terms} 个目标项（权重={distribution_preference_weight}）。",
+    )
 
     no_cross_noon_constraints = 0
     if default_rules_enabled and noon_boundary_by_class:
         for teacher in all_teachers:
             for day in day_keys:
-                vars_morning: list[cp_model.IntVar] = []
-                vars_afternoon: list[cp_model.IntVar] = []
+                morning_indexes: set[tuple[int, int]] = set()
+                afternoon_indexes: set[tuple[int, int]] = set()
                 existing_morning = 0
                 existing_afternoon = 0
                 for class_id in class_ids:
@@ -901,34 +1271,57 @@ def solve(payload: SmartSolveRequest):
                         if teacher not in unit["teachers"]:
                             continue
                         course_key = unit["course_key_by_class"].get(class_id, "")
-                        if not rule_pair_enabled(default_rules_raw.get("noCrossNoon"), course_key, main_course_ids, secondary_course_ids):
+                        if not rule_pair_has_value(
+                            default_rules_raw.get("noCrossNoon"),
+                            course_key,
+                            main_course_ids,
+                            secondary_course_ids,
+                            {"不能让老师在上午末节和下午首节连上", "禁止教师上午末节与下午首节连上"},
+                        ):
                             continue
                         s_idx_m = slot_index_map.get(morning_slot, -1)
                         s_idx_a = slot_index_map.get(afternoon_slot, -1)
                         if s_idx_m >= 0 and (u_idx, s_idx_m) in x:
-                            vars_morning.append(x[(u_idx, s_idx_m)])
+                            morning_indexes.add((u_idx, s_idx_m))
                         if s_idx_a >= 0 and (u_idx, s_idx_a) in x:
-                            vars_afternoon.append(x[(u_idx, s_idx_a)])
+                            afternoon_indexes.add((u_idx, s_idx_a))
                     lesson_m = payload.scheduleMap.get(class_id, {}).get(morning_slot)
                     lesson_a = payload.scheduleMap.get(class_id, {}).get(afternoon_slot)
                     if teacher in lesson_teachers(lesson_m):
                         course_key = str((lesson_m.courseId if lesson_m else "") or "").strip()
-                        if rule_pair_enabled(default_rules_raw.get("noCrossNoon"), course_key, main_course_ids, secondary_course_ids):
+                        if rule_pair_has_value(
+                            default_rules_raw.get("noCrossNoon"),
+                            course_key,
+                            main_course_ids,
+                            secondary_course_ids,
+                            {"不能让老师在上午末节和下午首节连上", "禁止教师上午末节与下午首节连上"},
+                        ):
                             existing_morning = 1
                     if teacher in lesson_teachers(lesson_a):
                         course_key = str((lesson_a.courseId if lesson_a else "") or "").strip()
-                        if rule_pair_enabled(default_rules_raw.get("noCrossNoon"), course_key, main_course_ids, secondary_course_ids):
+                        if rule_pair_has_value(
+                            default_rules_raw.get("noCrossNoon"),
+                            course_key,
+                            main_course_ids,
+                            secondary_course_ids,
+                            {"不能让老师在上午末节和下午首节连上", "禁止教师上午末节与下午首节连上"},
+                        ):
                             existing_afternoon = 1
-                if not vars_morning and not vars_afternoon:
+                if not morning_indexes and not afternoon_indexes:
                     continue
                 rhs = 1 - existing_morning - existing_afternoon
                 if rhs < 0:
                     rhs = 0
-                model.Add(sum(vars_morning) + sum(vars_afternoon) <= rhs)
+                model.Add(
+                    sum(x[index] for index in sorted(morning_indexes))
+                    + sum(x[index] for index in sorted(afternoon_indexes))
+                    <= rhs
+                )
                 no_cross_noon_constraints += 1
     push_log("规则", f"上下节连续硬约束：新增 {no_cross_noon_constraints} 条。")
 
-    no_consecutive_constraints = 0
+    no_consecutive_preference_terms = 0
+    no_consecutive_preference_weight = 70
     if default_rules_enabled:
         for class_id in class_ids:
             course_keys = sorted(
@@ -941,7 +1334,13 @@ def solve(payload: SmartSolveRequest):
             for course_key in course_keys:
                 if (class_id, course_key) in consecutive_required_courses:
                     continue
-                if not rule_pair_enabled(default_rules_raw.get("sameClassNoConsecutive"), course_key, main_course_ids, secondary_course_ids):
+                if not rule_pair_has_value(
+                    default_rules_raw.get("sameClassNoConsecutive"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"优先不连堂"},
+                ):
                     continue
                 for day, slots in slots_by_day.items():
                     for idx in range(len(slots) - 1):
@@ -949,28 +1348,42 @@ def solve(payload: SmartSolveRequest):
                         period_b, s_idx_b, slot_b = slots[idx + 1]
                         if period_b - period_a != 1:
                             continue
-                        vars_pair: list[cp_model.IntVar] = []
+                        vars_a: list[cp_model.IntVar] = []
+                        vars_b: list[cp_model.IntVar] = []
                         for u_idx, unit in enumerate(units):
                             if unit["course_key_by_class"].get(class_id) != course_key:
                                 continue
                             if (u_idx, s_idx_a) in x:
-                                vars_pair.append(x[(u_idx, s_idx_a)])
+                                vars_a.append(x[(u_idx, s_idx_a)])
                             if (u_idx, s_idx_b) in x:
-                                vars_pair.append(x[(u_idx, s_idx_b)])
-                        existing_pair = existing_by_class_course_slot.get((class_id, course_key, slot_a), 0) + existing_by_class_course_slot.get((class_id, course_key, slot_b), 0)
-                        if vars_pair:
-                            rhs = 1 - existing_pair
-                            if rhs < 0:
-                                rhs = 0
-                            model.Add(sum(vars_pair) <= rhs)
-                            no_consecutive_constraints += 1
-    push_log("规则", f"同班无连堂硬约束：新增 {no_consecutive_constraints} 条。")
+                                vars_b.append(x[(u_idx, s_idx_b)])
+                        existing_a = min(1, existing_by_class_course_slot.get((class_id, course_key, slot_a), 0))
+                        existing_b = min(1, existing_by_class_course_slot.get((class_id, course_key, slot_b), 0))
+                        active_a: cp_model.LinearExpr | int = existing_a + (sum(vars_a) if vars_a else 0)
+                        active_b: cp_model.LinearExpr | int = existing_b + (sum(vars_b) if vars_b else 0)
+                        pair_active = both_active_term(
+                            active_a,
+                            active_b,
+                            name=f"avoid_consecutive_{class_id}_{course_key}_{day}_{period_a}_{period_b}",
+                        )
+                        if isinstance(pair_active, int):
+                            if pair_active:
+                                course_default_objective_terms.append(-no_consecutive_preference_weight)
+                                no_consecutive_preference_terms += 1
+                        else:
+                            course_default_objective_terms.append(-no_consecutive_preference_weight * pair_active)
+                            no_consecutive_preference_terms += 1
+    push_log(
+        "规则",
+        f"同课程不连堂软偏好：加入 {no_consecutive_preference_terms} 个目标项（权重={no_consecutive_preference_weight}）。",
+    )
 
     consecutive_hard_constraints = 0
+    consecutive_daily_constraints = 0
     consecutive_preferred_terms = 0
     consecutive_conflicts: list[dict[str, Any]] = []
     consecutive_objective_terms: list[cp_model.LinearExpr | int] = []
-    CONSECUTIVE_PREFERRED_WEIGHT = int(rule_options.get("consecutivePreferredWeight") or 320)
+    CONSECUTIVE_PREFERRED_WEIGHT = option_int(rule_options, "consecutivePreferredWeight", 30)
     CONSECUTIVE_PREFERRED_WEIGHT = max(0, min(1000, CONSECUTIVE_PREFERRED_WEIGHT))
     for constraint in consecutive_constraints:
         class_id = constraint["classId"]
@@ -981,6 +1394,7 @@ def solve(payload: SmartSolveRequest):
 
         # Existing timetable already exceeds target consecutive-pair count.
         existing_pairs = 0
+        existing_pairs_by_day: dict[str, int] = {}
         for day, slots in slots_by_day.items():
             for idx in range(len(slots) - 1):
                 period_a, _, slot_a = slots[idx]
@@ -993,6 +1407,20 @@ def solve(payload: SmartSolveRequest):
                 course_b = str((lesson_b.courseId if lesson_b else "") or (lesson_b.assignmentKey if lesson_b else "") or "").strip()
                 if course_a in course_ids and course_b in course_ids:
                     existing_pairs += 1
+                    existing_pairs_by_day[day] = existing_pairs_by_day.get(day, 0) + 1
+        overloaded_days = [day for day, count in existing_pairs_by_day.items() if count > 1]
+        if overloaded_days:
+            consecutive_conflicts.append(
+                {
+                    "classId": class_id,
+                    "courseIds": sorted(course_ids),
+                    "weeklyConsecutiveCount": weekly_target,
+                    "existingPairs": existing_pairs,
+                    "days": overloaded_days,
+                    "reason": "multiple_pairs_same_day",
+                }
+            )
+            continue
         if existing_pairs > weekly_target:
             consecutive_conflicts.append(
                 {
@@ -1080,6 +1508,15 @@ def solve(payload: SmartSolveRequest):
         model.Add(pair_sum_expr == weekly_target)
         consecutive_hard_constraints += 1
 
+        # Weekly consecutive count represents double-lesson days. A triple run
+        # contains two overlapping adjacent pairs, so limiting each day to one
+        # pair also prevents three consecutive lessons from being miscounted.
+        for day, day_terms in pair_terms_by_day.items():
+            if not day_terms:
+                continue
+            model.Add(sum(day_terms) <= 1)
+            consecutive_daily_constraints += 1
+
         if preferred_days:
             for day in preferred_days:
                 for term in pair_terms_by_day.get(day, []):
@@ -1106,7 +1543,8 @@ def solve(payload: SmartSolveRequest):
 
     push_log(
         "规则",
-        f"连堂课约束：新增 {consecutive_hard_constraints} 条次数硬约束，新增 {consecutive_preferred_terms} 个优选日目标项（权重={CONSECUTIVE_PREFERRED_WEIGHT}）。",
+        f"连堂课约束：新增 {consecutive_hard_constraints} 条周次数硬约束，新增 {consecutive_daily_constraints} 条每日单组约束，"
+        + f"新增 {consecutive_preferred_terms} 个优选日目标项（权重={CONSECUTIVE_PREFERRED_WEIGHT}）。",
     )
 
     two_gap_constraints = 0
@@ -1121,7 +1559,13 @@ def solve(payload: SmartSolveRequest):
         for (class_id, course_key), total in total_by_class_course.items():
             if total != 2:
                 continue
-            if not rule_pair_enabled(default_rules_raw.get("twoLessonsGap"), course_key, main_course_ids, secondary_course_ids):
+            if not rule_pair_has_value(
+                default_rules_raw.get("twoLessonsGap"),
+                course_key,
+                main_course_ids,
+                secondary_course_ids,
+                {"是", "启用"},
+            ):
                 continue
             day_exprs: dict[str, list[cp_model.IntVar]] = {day: [] for day in day_keys}
             existing_day: dict[str, int] = {day: existing_by_class_course_day.get((class_id, course_key, day), 0) for day in day_keys}
@@ -1170,7 +1614,7 @@ def solve(payload: SmartSolveRequest):
             return "afternoon"
         return None
 
-    existing_teacher_occ_by_half: dict[tuple[str, str, str], int] = {}
+    existing_teacher_slots_by_half: dict[tuple[str, str, str], set[str]] = {}
     for class_id in class_ids:
         grid = payload.scheduleMap.get(class_id, {})
         for slot in slot_keys:
@@ -1186,7 +1630,10 @@ def solve(payload: SmartSolveRequest):
                 continue
             for teacher in lesson_teachers(lesson):
                 key = (teacher, day, half)
-                existing_teacher_occ_by_half[key] = existing_teacher_occ_by_half.get(key, 0) + 1
+                existing_teacher_slots_by_half.setdefault(key, set()).add(slot)
+    existing_teacher_occ_by_half = {
+        key: len(slots) for key, slots in existing_teacher_slots_by_half.items()
+    }
 
     teacher_day_pairs: dict[tuple[str, str], set[tuple[int, int]]] = {}
     teacher_day_half_pairs: dict[tuple[str, str, str], set[tuple[int, int]]] = {}
@@ -1218,11 +1665,13 @@ def solve(payload: SmartSolveRequest):
         model.Add(sum(terms_local) == 0).OnlyEnforceIf(var.Not())
         return var
 
-    # objective: maximize placed count, then optimize distribution preferences
+    # Quality objective. Placement count is solved in a separate first stage below,
+    # so soft preferences can never reduce the number of scheduled lessons.
     terms = []
     for (u_idx, s_idx), var in x.items():
         score = 1000 - s_idx
         terms.append(score * var)
+    terms.extend(course_default_objective_terms)
     terms.extend(consecutive_objective_terms)
 
     WEEK_DISTRIBUTION_WEIGHT = week_distribution_weight
@@ -1325,20 +1774,57 @@ def solve(payload: SmartSolveRequest):
         f"教师周分布/日分布软约束：加入 {week_pref_terms + day_pref_terms} 个目标项（周权重={WEEK_DISTRIBUTION_WEIGHT}, 日权重={DAY_DISTRIBUTION_WEIGHT}）。",
     )
 
-    if terms:
+    placement_vars = list(x.values())
+    total_time_limit = 8.0
+
+    def configure_solver(target: cp_model.CpSolver, time_limit: float) -> None:
+        target.parameters.max_time_in_seconds = max(0.1, time_limit)
+        target.parameters.num_search_workers = 8
+        target.parameters.random_seed = 20260715
+
+    solve_started_at = perf_counter()
+    model.Maximize(sum(placement_vars) if placement_vars else 0)
+    primary_solver = cp_model.CpSolver()
+    configure_solver(primary_solver, total_time_limit * 0.7)
+    primary_status = primary_solver.Solve(model)
+    if primary_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        status_name = primary_solver.StatusName(primary_status)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ORTOOLS_INFEASIBLE",
+                "message": "当前硬约束下没有可行排课结果。" if primary_status == cp_model.INFEASIBLE else "求解器未能在限定时间内找到可行结果。",
+                "solverStatus": status_name,
+                "unitCount": len(units),
+                "variableCount": len(x),
+            },
+        )
+
+    best_placed_units = sum(primary_solver.Value(var) for var in placement_vars)
+    push_log(
+        "求解",
+        f"第一阶段完成：优先保证排课数量，最多可安排 {best_placed_units}/{len(units)} 个需求单元（状态={primary_solver.StatusName(primary_status)}）。",
+    )
+
+    solver = primary_solver
+    status = primary_status
+    elapsed = perf_counter() - solve_started_at
+    remaining_time = max(0.0, total_time_limit - elapsed)
+    if placement_vars and terms and remaining_time >= 0.2:
+        model.Add(sum(placement_vars) == best_placed_units)
         model.Maximize(sum(terms))
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 8.0
-    solver.parameters.num_search_workers = 8
-    status = solver.Solve(model)
-
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return {
-            "ok": True,
-            "result": {"placements": [], "placedCount": 0, "remainingCount": sum(max(0, int(d.remaining or 0)) for d in payload.demands)},
-            "logs": logs,
-        }
+        quality_solver = cp_model.CpSolver()
+        configure_solver(quality_solver, remaining_time)
+        quality_status = quality_solver.Solve(model)
+        if quality_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            solver = quality_solver
+            status = quality_status
+            push_log(
+                "求解",
+                f"第二阶段完成：在不减少排课数量的前提下优化分布与时段偏好（状态={quality_solver.StatusName(quality_status)}）。",
+            )
+        else:
+            push_log("求解", "第二阶段未取得更优可行解，保留第一阶段的最大排课数量结果。")
 
     placements = []
     placed_units = 0
@@ -1540,7 +2026,13 @@ def solve(payload: SmartSolveRequest):
                 course_key = str(lesson.courseId or lesson.assignmentKey or "").strip()
                 if not course_key:
                     continue
-                if not rule_pair_enabled(default_rules_raw.get("syncStart"), course_key, main_course_ids, secondary_course_ids):
+                if not rule_pair_has_value(
+                    default_rules_raw.get("syncStart"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"必须一致", "启用"},
+                ):
                     continue
                 for teacher in lesson_teachers(lesson):
                     push_final(teacher, course_key, class_id, day, period)
@@ -1555,7 +2047,13 @@ def solve(payload: SmartSolveRequest):
                 course_key = str(unit["course_key_by_class"].get(class_id, "")).strip()
                 if not course_key:
                     continue
-                if not rule_pair_enabled(default_rules_raw.get("syncStart"), course_key, main_course_ids, secondary_course_ids):
+                if not rule_pair_has_value(
+                    default_rules_raw.get("syncStart"),
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    {"必须一致", "启用"},
+                ):
                     continue
                 for teacher in unit["teachers"]:
                     push_final(teacher, course_key, class_id, day, period)
@@ -1626,7 +2124,8 @@ def solve(payload: SmartSolveRequest):
             },
         )
 
-    remaining = max(0, sum(max(0, int(d.remaining or 0)) for d in payload.demands) - placed_units)
+    total_lesson_cells = sum(len(unit["target_ids"]) for unit in units)
+    remaining = max(0, total_lesson_cells - len(placements))
 
     return {
         "ok": True,

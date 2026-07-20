@@ -36,6 +36,13 @@ export type DropEvaluationContext = {
   classLabelById: (classId: string) => string
   teacherBanMessageAtSlot: (lesson: EngineLesson, classId: string, slotKey: string) => string | null
   teacherConflictMessagesAtSlot: (teachers: string[], slotKey: string, excludedClassIds?: string[]) => string[]
+  teacherMutualMessageAtSlot?: (teachers: string[], slotKey: string, excludedClassIds?: string[]) => string | null
+  courseRuleMessageAtSlot?: (
+    lesson: EngineLesson,
+    classId: string,
+    slotKey: string,
+    movingFromSlotKey?: string
+  ) => string | null
   sameClassDayAdjacencyMessageAtSlot?: (
     lesson: EngineLesson,
     classId: string,
@@ -86,6 +93,8 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
       const nextLesson = ctx.buildLessonForClassFromBlock(classId, block)
       const adjacencyMessage = ctx.sameClassDayAdjacencyMessageAtSlot?.(nextLesson, classId, targetKey)
       if (adjacencyMessage) return { allowed: false, reason: adjacencyMessage }
+      const courseRuleMessage = ctx.courseRuleMessageAtSlot?.(nextLesson, classId, targetKey)
+      if (courseRuleMessage) return { allowed: false, reason: courseRuleMessage }
       const banMessage = ctx.teacherBanMessageAtSlot(nextLesson, classId, targetKey)
       if (banMessage) return { allowed: false, reason: `${banMessage}，不能排课。` }
       const conflictMessages = ctx.teacherConflictMessagesAtSlot(
@@ -94,6 +103,12 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
         Array.from(targetClassSet)
       )
       if (conflictMessages.length > 0) return { allowed: false, reason: `${conflictMessages[0]}，不能重复排课。` }
+      const mutualMessage = ctx.teacherMutualMessageAtSlot?.(
+        teacherListOfLesson(nextLesson),
+        targetKey,
+        Array.from(targetClassSet)
+      )
+      if (mutualMessage) return { allowed: false, reason: mutualMessage }
     }
     return { allowed: true, reason: null }
   }
@@ -109,6 +124,14 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
   )
   if (sourceAdjacencyMessage) return { allowed: false, reason: sourceAdjacencyMessage }
 
+  const sourceCourseRuleMessage = ctx.courseRuleMessageAtSlot?.(
+    sourceLesson,
+    payload.classId,
+    targetKey,
+    payload.slotKey
+  )
+  if (sourceCourseRuleMessage) return { allowed: false, reason: sourceCourseRuleMessage }
+
   const sourceBanMessage = ctx.teacherBanMessageAtSlot(sourceLesson, payload.classId, targetKey)
   if (sourceBanMessage) return { allowed: false, reason: `${sourceBanMessage}，不能排课。` }
 
@@ -118,6 +141,12 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
     [payload.classId, selectedClassId]
   )
   if (sourceConflictMessages.length > 0) return { allowed: false, reason: `${sourceConflictMessages[0]}，不能重复排课。` }
+  const sourceMutualMessage = ctx.teacherMutualMessageAtSlot?.(
+    teacherListOfLesson(sourceLesson),
+    targetKey,
+    [payload.classId, selectedClassId]
+  )
+  if (sourceMutualMessage) return { allowed: false, reason: sourceMutualMessage }
 
   if (targetLesson) {
     const targetAdjacencyMessage = ctx.sameClassDayAdjacencyMessageAtSlot?.(
@@ -127,6 +156,13 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
       targetKey
     )
     if (targetAdjacencyMessage) return { allowed: false, reason: targetAdjacencyMessage }
+    const targetCourseRuleMessage = ctx.courseRuleMessageAtSlot?.(
+      targetLesson,
+      selectedClassId,
+      payload.slotKey,
+      targetKey
+    )
+    if (targetCourseRuleMessage) return { allowed: false, reason: targetCourseRuleMessage }
     const targetBanMessage = ctx.teacherBanMessageAtSlot(targetLesson, selectedClassId, payload.slotKey)
     if (targetBanMessage) return { allowed: false, reason: `${targetBanMessage}，不能排课。` }
     const targetConflictMessages = ctx.teacherConflictMessagesAtSlot(
@@ -135,6 +171,12 @@ export function evaluateDropTarget(ctx: DropEvaluationContext): DropEvaluationRe
       [selectedClassId, payload.classId]
     )
     if (targetConflictMessages.length > 0) return { allowed: false, reason: `${targetConflictMessages[0]}，不能重复排课。` }
+    const targetMutualMessage = ctx.teacherMutualMessageAtSlot?.(
+      teacherListOfLesson(targetLesson),
+      payload.slotKey,
+      [selectedClassId, payload.classId]
+    )
+    if (targetMutualMessage) return { allowed: false, reason: targetMutualMessage }
   }
 
   return { allowed: true, reason: null }
@@ -176,6 +218,9 @@ export function dropForbiddenLabelFromReason(reason: string | null): string {
   if (reason.includes('全局固定点')) return '固定点'
   if (reason.includes('已锁定')) return '已锁定'
   if (reason.includes('同班同课程同日需连排')) return '教案齐头'
+  if (reason.includes('课程区域')) return '课程区域'
+  if (reason.includes('课程关系')) return '课程关系'
+  if (reason.includes('教师互斥')) return '教师互斥'
   if (reason.includes('不排课')) return '教师禁排'
   if (reason.includes('重复排课') || reason.includes('教师「')) return '教师冲突'
   return '不可排'

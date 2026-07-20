@@ -1,3 +1,5 @@
+import { withAccountQuery } from './accountContext'
+
 export type ApiSolverLesson = {
   assignmentKey: string
   courseId: string
@@ -8,11 +10,17 @@ export type ApiSolverLesson = {
   teacherNames?: string[]
   color: string
   isCombined?: boolean
+  isOddEven?: boolean
+  oddCourseId?: string
+  evenCourseId?: string
+  oddCourseName?: string
+  evenCourseName?: string
   locked?: boolean
 }
 
 export type ApiSolveDemand = {
   assignmentKey: string
+  sourceClassId?: string
   remaining: number
   targetClassIds: string[]
   lessonsByClass: Record<string, ApiSolverLesson>
@@ -25,6 +33,13 @@ export type ApiConsecutiveConstraint = {
   courseIds: string[]
   weeklyConsecutiveCount: number
   preferredDays: string[]
+}
+
+export type ApiCourseRelationConstraint = {
+  classId: string
+  courseAIds: string[]
+  courseBIds: string[]
+  relationType: '前后互斥' | '同天互斥'
 }
 
 export type ApiSmartSolveRequest = {
@@ -87,9 +102,11 @@ export type ApiSmartSolveRequest = {
     enableCourseDefault?: boolean
     enableMainSecondary?: boolean
     enableOddEven?: boolean
+    enableCourseRelation?: boolean
     consecutivePreferredWeight?: number
   }
   consecutiveConstraints?: ApiConsecutiveConstraint[]
+  courseRelationConstraints?: ApiCourseRelationConstraint[]
   scheduleMap: Record<string, Record<string, ApiSolverLesson | null>>
   demands: ApiSolveDemand[]
 }
@@ -119,6 +136,31 @@ export type ApiSmartSolveEnvelope = {
   logs: ApiSmartSolveLog[]
 }
 
+export type ApiSmartQueueStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export type ApiSmartQueueUpdate = {
+  id: string
+  status: ApiSmartQueueStatus
+  position: number
+  waitingAhead: number
+  queueSize: number
+  queuedAt: string
+  startedAt: string | null
+  completedAt: string | null
+  estimatedStartAt: string | null
+  estimatedFinishAt: string | null
+  estimatedDurationMs: number
+}
+
+type ApiSmartQueueJob = ApiSmartQueueUpdate & {
+  result?: ApiSmartSolveEnvelope
+  error?: {
+    code?: string
+    message?: string
+    detail?: string
+  }
+}
+
 export class SmartSchedulerApiError extends Error {
   constructor(
     message: string,
@@ -137,45 +179,85 @@ function endpoint(path: string): string {
   return `${apiBaseUrl}${path}`
 }
 
-export async function solveSmartByApi(payload: ApiSmartSolveRequest): Promise<ApiSmartSolveEnvelope> {
-  const response = await fetch(endpoint(`/api/${profile}/scheduler/solve-smart`), {
+async function readApiError(response: Response): Promise<SmartSchedulerApiError> {
+  let message = ''
+  let code = 'HTTP_ERROR'
+  let detail = ''
+  try {
+    const err = (await response.json()) as { message?: unknown; error?: unknown; code?: unknown; detail?: unknown }
+    code = String(err?.code || code).trim() || code
+    detail = String(err?.detail || '').trim()
+    if (Array.isArray(err?.message)) {
+      message = err.message.map((item) => String(item || '')).filter(Boolean).join('; ')
+    } else if (err?.message && typeof err.message === 'object') {
+      const nested = err.message as { message?: unknown; code?: unknown; detail?: unknown }
+      code = String(nested.code || code).trim() || code
+      detail = String(nested.detail || detail).trim()
+      message = String(nested.message || err.error || '').trim()
+    } else {
+      message = String(err?.message || err?.error || '').trim()
+    }
+  } catch {
+    // ignore malformed error payload
+  }
+  if (!message) message = `HTTP ${response.status}`
+  return new SmartSchedulerApiError(message, code, detail)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+export async function solveSmartByApi(
+  payload: ApiSmartSolveRequest,
+  onQueueUpdate?: (update: ApiSmartQueueUpdate) => void
+): Promise<ApiSmartSolveEnvelope> {
+  const response = await fetch(withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart`)), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
   if (!response.ok) {
-    let message = ''
-    let code = 'HTTP_ERROR'
-    let detail = ''
-    try {
-      const err = (await response.json()) as { message?: unknown; error?: unknown; code?: unknown; detail?: unknown }
-      code = String(err?.code || code).trim() || code
-      detail = String(err?.detail || '').trim()
-      if (Array.isArray(err?.message)) {
-        message = err.message.map((item) => String(item || '')).filter(Boolean).join('; ')
-      } else {
-        message = String(err?.message || err?.error || '').trim()
+    throw await readApiError(response)
+  }
+
+  const submitted = (await response.json()) as { ok?: boolean; job?: ApiSmartQueueJob }
+  if (!submitted?.ok || !submitted.job?.id) {
+    throw new SmartSchedulerApiError('智能排课任务提交失败：返回格式异常', 'INVALID_QUEUE_RESPONSE')
+  }
+
+  let job = submitted.job
+  const deadline = Date.now() + 2 * 60 * 60 * 1000
+  while (Date.now() < deadline) {
+    onQueueUpdate?.(job)
+    if (job.status === 'completed' && job.result?.result) {
+      return {
+        engine: String(job.result.engine || 'unknown'),
+        fallback: Boolean(job.result.fallback),
+        result: job.result.result,
+        logs: Array.isArray(job.result.logs) ? job.result.logs : []
       }
-    } catch {
-      // ignore
     }
-    if (!message) message = `HTTP ${response.status}`
-    throw new SmartSchedulerApiError(message, code, detail)
+    if (job.status === 'failed') {
+      throw new SmartSchedulerApiError(
+        String(job.error?.message || '智能排课任务执行失败'),
+        String(job.error?.code || 'ORTOOLS_UNKNOWN'),
+        String(job.error?.detail || '')
+      )
+    }
+
+    await sleep(1000)
+    const statusResponse = await fetch(
+      withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart/${encodeURIComponent(job.id)}`)),
+      { method: 'GET' }
+    )
+    if (!statusResponse.ok) throw await readApiError(statusResponse)
+    const statusPayload = (await statusResponse.json()) as { ok?: boolean; job?: ApiSmartQueueJob }
+    if (!statusPayload?.ok || !statusPayload.job?.id) {
+      throw new SmartSchedulerApiError('智能排课任务状态异常', 'INVALID_QUEUE_RESPONSE')
+    }
+    job = statusPayload.job
   }
-  const json = (await response.json()) as {
-    ok?: boolean
-    engine?: unknown
-    fallback?: unknown
-    result?: ApiSmartSolveResult
-    logs?: ApiSmartSolveLog[]
-  }
-  if (!json?.ok || !json.result) {
-    throw new Error('Invalid solver response')
-  }
-  return {
-    engine: String(json.engine || 'unknown'),
-    fallback: Boolean(json.fallback),
-    result: json.result,
-    logs: Array.isArray(json.logs) ? json.logs : []
-  }
+
+  throw new SmartSchedulerApiError('智能排课排队等待超时，请稍后重试。', 'QUEUE_WAIT_TIMEOUT')
 }

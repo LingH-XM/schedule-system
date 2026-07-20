@@ -20,7 +20,21 @@ uvicorn solver_api:app --host 127.0.0.1 --port 8790
 API:
 - `POST /solve-cpsat`
 
-## 3) Connect with Nest backend
+## 3) Test
+
+```bash
+cd backend/solver
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -p 'test_*.py' -v
+```
+
+The solver uses two optimization stages:
+
+1. maximize the number of scheduled lesson cells;
+2. keep that maximum fixed, then optimize distribution, preferred days, and slot order.
+
+This prevents soft preferences from reducing the amount of completed scheduling.
+
+## 4) Connect with Nest backend
 
 ```bash
 export SCHEDULER_ENGINE=ortools-cpsat

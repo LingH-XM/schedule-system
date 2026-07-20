@@ -2,7 +2,9 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { notify } from '../../utils/notify'
+import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 import {
+  cloneCourseDefaultConfig,
   defaultCourseDefaultConfig,
   defaultRuleWeightConfig,
   hydrateRuleSettingsSnapshotFromApi,
@@ -45,7 +47,6 @@ import {
 type RuleStep = {
   id: string
   label: string
-  sub?: boolean
 }
 
 type RuleNavCard = {
@@ -99,36 +100,10 @@ type AdminBaseSnapshot = {
 }
 
 const steps: RuleStep[] = [
-  { id: 'admin-base', label: '1 行政班基础信息' },
-  { id: 'course-rules', label: '2 规则管理' },
-  { id: 'course-default', label: '2.1 默认规则', sub: true },
-  { id: 'course-common', label: '2.2 课程规则', sub: true },
-  { id: 'teacher-rules', label: '2.3 教师规则', sub: true },
-  { id: 'course-weight', label: '2.4 规则权重分配', sub: true },
-  { id: 'custom-rules', label: '3 个性化规则' }
-]
-
-const ruleManageCards: RuleNavCard[] = [
-  {
-    id: 'course-default',
-    title: '默认规则',
-    desc: '管理主科/副科默认行为与启用状态，作为年级规则基线。'
-  },
-  {
-    id: 'course-common',
-    title: '课程规则',
-    desc: '进入常规规则配置，包括主副科、单双周、连堂课、排课区域等。'
-  },
-  {
-    id: 'teacher-rules',
-    title: '教师规则',
-    desc: '进入教师相关规则配置，包括教师不排课、教师课时、教师互斥。'
-  },
-  {
-    id: 'course-weight',
-    title: '规则权重分配',
-    desc: '设置硬约束优先级与软约束权重，为智能排课提供评分依据。'
-  }
+  { id: 'course-default', label: '默认规则' },
+  { id: 'course-common', label: '课程规则' },
+  { id: 'teacher-rules', label: '教师规则' },
+  { id: 'course-weight', label: '权重分配' }
 ]
 
 const commonRuleCards: CommonRuleGuide[] = [
@@ -165,8 +140,8 @@ const commonRuleCards: CommonRuleGuide[] = [
   {
     id: 'course-slot',
     title: '课程时段设置',
-    desc: '按课程、班级设置可排课区域或禁止排课的节次。',
-    usage: ['切换设置状态后，在同一张节次表格中完成配置。', '排课区域限定可排节次；不排课则禁止课程进入指定节次。']
+    desc: '按课程、班级设置允许排课或禁止排课的节次。',
+    usage: ['切换设置状态后，在同一张节次表格中完成配置。', '允许排课限定可排节次；禁止排课则阻止课程进入指定节次。']
   },
   {
     id: 'course-relation',
@@ -196,11 +171,12 @@ const teacherRuleCards: CommonRuleGuide[] = [
   }
 ]
 
-const activeStep = ref('admin-base')
+const activeStep = ref('course-default')
 const selectedCommonRuleId = ref('course-main')
 const selectedTeacherRuleId = ref('teacher-ban')
 const adminBaseLoading = ref(false)
 const adminBaseLoadedAt = ref(0)
+const rulesReady = ref(false)
 const adminBaseSnapshot = ref<AdminBaseSnapshot>({
   campuses: [],
   classRecords: [],
@@ -346,20 +322,13 @@ const fallbackBanSubjects = ['语文', '数学', '英语', '物理', '化学', '
 const defaultMainSubjects = ['语文', '数学', '英语']
 const activeBanSubject = ref('语文')
 const courseSlotMode = ref<'area' | 'ban'>('area')
-const consecutiveTypeOptions = ['正课']
 const selectedConsecutiveType = ref('正课')
 const activeConsecutiveSubject = ref('语文')
 const selectedConsecutiveCampus = ref('')
 const selectedConsecutiveGrade = ref('')
+const selectedConsecutiveClass = ref('全部班级')
 const consecutiveWeekdays = ['周一', '周二', '周三', '周四', '周五']
 const consecutiveSettingMap = ref<ConsecutiveSettingMap>(cloneConsecutiveSettingMap(ruleSettingsSnapshot.consecutiveSettings))
-const consecutiveClassDialogVisible = ref(false)
-const consecutiveClassDialogError = ref('')
-const consecutiveClassForm = reactive({
-  className: '',
-  weeklyConsecutiveCount: null as number | null,
-  preferredDays: [] as string[]
-})
 const teacherBanMode = ref<'single' | 'group'>('single')
 const selectedTeacherId = ref('')
 const selectedGroupId = ref('')
@@ -509,13 +478,12 @@ const combineCourseOptions = computed(() => [
   '全部课程',
   ...Array.from(new Set(adminBaseSnapshot.value.courses.map((item) => item.name).filter(Boolean)))
 ])
-const combineScopeOptions = ['全部范围', '正课', '选修', '社团']
 const selectedCombineCampus = ref('全部校区')
 const selectedCombineGrade = ref('全部年级')
 const selectedCombineClass = ref('全部班级')
 const selectedCombineCourse = ref('全部课程')
-const selectedCombineScope = ref('全部范围')
 const combineRules = ref<CourseCombineRule[]>(ruleSettingsSnapshot.combineRules || [])
+const selectedCombineRuleIds = ref<string[]>([])
 const combineDialogVisible = ref(false)
 const combineDialogMode = ref<'create' | 'edit'>('create')
 const combineEditingId = ref('')
@@ -524,8 +492,7 @@ const combineForm = reactive({
   campus: '本校区',
   grade: '',
   classNames: [] as string[],
-  course: '',
-  scope: '正课'
+  course: ''
 })
 
 const combineClassOptions = computed(() => {
@@ -567,7 +534,6 @@ const combineDialogClassOptions = computed(() => {
   )
 })
 const combineDialogCourseOptions = computed(() => combineCourseOptions.value.filter((item) => item !== '全部课程'))
-const combineDialogScopeOptions = computed(() => combineScopeOptions.filter((item) => item !== '全部范围'))
 
 const filteredCombineRules = computed(() =>
   combineRules.value.filter((item) => {
@@ -575,9 +541,28 @@ const filteredCombineRules = computed(() =>
     if (selectedCombineGrade.value !== '全部年级' && item.grade !== selectedCombineGrade.value) return false
     if (selectedCombineClass.value !== '全部班级' && !item.classNames.includes(selectedCombineClass.value)) return false
     if (selectedCombineCourse.value !== '全部课程' && item.course !== selectedCombineCourse.value) return false
-    if (selectedCombineScope.value !== '全部范围' && item.scope !== selectedCombineScope.value) return false
     return true
   })
+)
+
+const selectedCombineRuleIdSet = computed(() => new Set(selectedCombineRuleIds.value))
+const allFilteredCombineRulesSelected = computed(
+  () =>
+    filteredCombineRules.value.length > 0 &&
+    filteredCombineRules.value.every((item) => selectedCombineRuleIdSet.value.has(item.id))
+)
+const someFilteredCombineRulesSelected = computed(
+  () =>
+    !allFilteredCombineRulesSelected.value &&
+    filteredCombineRules.value.some((item) => selectedCombineRuleIdSet.value.has(item.id))
+)
+
+watch(
+  () => filteredCombineRules.value.map((item) => item.id),
+  (visibleIds) => {
+    const visibleIdSet = new Set(visibleIds)
+    selectedCombineRuleIds.value = selectedCombineRuleIds.value.filter((id) => visibleIdSet.has(id))
+  }
 )
 
 const oddEvenCampusOptions = computed(() => ['全部校区', ...campusOptions.value])
@@ -591,7 +576,6 @@ const oddEvenGradeOptions = computed(() => {
   const grades = Array.from(new Set(classes.map((item) => item.grade).filter(Boolean)))
   return ['全部年级', ...grades]
 })
-const oddEvenScopeOptions = ['全部范围', '正课', '选修', '社团']
 const oddEvenCourseOptions = computed(() => [
   '全部课程',
   ...Array.from(new Set(adminBaseSnapshot.value.courses.map((item) => item.name)))
@@ -600,14 +584,15 @@ const selectedOddEvenCampus = ref('全部校区')
 const selectedOddEvenGrade = ref('全部年级')
 const selectedOddEvenClass = ref('全部班级')
 const selectedOddEvenCourse = ref('全部课程')
-const selectedOddEvenScope = ref('全部范围')
 const oddEvenRules = ref<OddEvenRule[]>(ruleSettingsSnapshot.oddEvenRules)
 const courseAreaRules = ref<CourseAreaRuleRecord[]>(ruleSettingsSnapshot.courseAreaRules || [])
 const courseBanRules = ref<CourseBanRuleRecord[]>(ruleSettingsSnapshot.courseBanRules || [])
 const mainSecondaryRules = ref<MainSecondaryRuleRecord[]>(ruleSettingsSnapshot.mainSecondaryRules || [])
 const courseRelationRules = ref<CourseRelationRuleRecord[]>(ruleSettingsSnapshot.courseRelationRules || [])
 const teacherMutualRules = ref<TeacherMutualRuleRecord[]>(ruleSettingsSnapshot.teacherMutualRules || [])
-const courseDefaultConfig = ref<CourseDefaultConfig>(ruleSettingsSnapshot.courseDefaultConfig || { ...defaultCourseDefaultConfig })
+const courseDefaultConfig = ref<CourseDefaultConfig>(
+  cloneCourseDefaultConfig(ruleSettingsSnapshot.courseDefaultConfig || defaultCourseDefaultConfig)
+)
 const ruleWeightConfig = ref<RuleWeightConfig>(JSON.parse(JSON.stringify(defaultRuleWeightConfig)))
 const ruleWeightConfigs = ref<RuleWeightConfigRecord[]>(ruleSettingsSnapshot.ruleWeightConfigs || [])
 const selectedWeightCampus = ref('')
@@ -633,19 +618,12 @@ const courseDefaultRows: Array<{ key: CourseDefaultRuleKey; label: string; optio
   { key: 'syncStart', label: '教案齐头', options: ['必须一致', '尽量一致', '无特殊要求'] },
   {
     key: 'distribution',
-    label: '分散方式',
-    options: [
-      '尽量当天上下 午都有课',
-      '尽量在一上午/一下午集中上完',
-      '尽量分散到不同天',
-      '尽量均匀分散到整周',
-      '优先排在周中时段',
-      '无特殊要求'
-    ]
+    label: '课程周分布',
+    options: ['尽量分散到不同天', '尽量集中在较少天', '优先安排在周中', '无特殊要求']
   },
-  { key: 'noCrossNoon', label: '上下节连续', options: ['不能让老师在上午末节和下午首节连上', '可允许上午末节和下午首节连上'] },
-  { key: 'sameClassNoConsecutive', label: '同班无连堂课设置的课程', options: ['无特殊要求', '优先不连堂'] },
-  { key: 'twoLessonsGap', label: '同一个班，周课时为2节的课程至少间隔一天', options: ['是', '否'] }
+  { key: 'noCrossNoon', label: '教师午间连上', options: ['不能让老师在上午末节和下午首节连上', '可允许上午末节和下午首节连上'] },
+  { key: 'sameClassNoConsecutive', label: '同课程连堂', options: ['优先不连堂', '无特殊要求'] },
+  { key: 'twoLessonsGap', label: '每周2节课程间隔', options: ['是', '否'] }
 ]
 
 function applyRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
@@ -674,7 +652,7 @@ function applyRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
           ...(snapshot.courseDefaultConfig.ruleEnabled || {})
         }
       }
-    : { ...defaultCourseDefaultConfig }
+    : cloneCourseDefaultConfig()
   ruleWeightConfigs.value = Array.isArray(snapshot.ruleWeightConfigs) ? [...snapshot.ruleWeightConfigs] : []
 }
 const hardRuleMeta: Record<RuleWeightHardKey, { label: string; desc: string }> = {
@@ -684,18 +662,18 @@ const hardRuleMeta: Record<RuleWeightHardKey, { label: string; desc: string }> =
   teacherMutual: { label: '教师互斥', desc: '互斥教师组同节次不可同时上课。' },
   classConflict: { label: '班级冲突', desc: '同一班级同节次不可安排多门课程。' },
   globalFixedPoint: { label: '全局固定点', desc: '固定点节次不可安排普通课程。' },
-  courseArea: { label: '课程排课区域', desc: '课程必须落在允许排课区域内。' },
-  courseBan: { label: '课程不排课', desc: '禁止课程进入禁排节次。' },
-  combineCourse: { label: '合班课一致性', desc: '合班课程需保持同节次同步安排。' }
+  courseArea: { label: '课程允许排课', desc: '课程必须落在允许排课节次内。' },
+  courseBan: { label: '课程禁止排课', desc: '禁止课程进入禁排节次。' },
+  combineCourse: { label: '合班课一致性', desc: '合班课程需保持同节次同步安排。' },
+  courseRelation: { label: '课程关系', desc: '前后互斥与同天互斥作为硬约束，不得违反。' }
 }
 const softRuleMeta: Record<RuleWeightSoftKey, { label: string; desc: string }> = {
-  teacherWeekDistribution: { label: '教师周分布', desc: '按周分散/周集中偏好优化教师周内分布。' },
-  teacherDayDistribution: { label: '教师日分布', desc: '按日分散/日集中偏好优化教师上下午分布。' },
-  consecutive: { label: '连堂课偏好', desc: '优先满足连堂课次数/日分布偏好。' },
-  oddEven: { label: '单双周匹配', desc: '优先满足单双周课程同节次配对。' },
-  mainSecondary: { label: '主副科平衡', desc: '优先满足主副科节次分布策略。' },
-  courseDefault: { label: '默认规则偏好', desc: '按默认规则中启用项进行优化排序。' },
-  courseRelation: { label: '课程关系偏好', desc: '优先满足前后互斥与同天互斥。' }
+  teacherWeekDistribution: { label: '教师周分布', desc: '控制教师课程在一周内分散或集中的偏好强度。' },
+  teacherDayDistribution: { label: '教师日分布', desc: '控制教师课程在上午、下午分散或集中的偏好强度。' },
+  consecutive: { label: '连堂优选日', desc: '连堂次数属于硬约束；此权重只决定优选日期的满足程度。' },
+  oddEven: { label: '单双周匹配', desc: '启用后将单双周课程合并为同一节次需求。' },
+  mainSecondary: { label: '主副科分类', desc: '启用后按照主副科配置应用课程默认规则。' },
+  courseDefault: { label: '课程默认规则', desc: '启用后应用教案齐头、分散方式等默认规则。' }
 }
 const ruleWeightMeta: Record<RuleWeightRuleKey, { label: string; desc: string }> = {
   ...hardRuleMeta,
@@ -703,11 +681,16 @@ const ruleWeightMeta: Record<RuleWeightRuleKey, { label: string; desc: string }>
 }
 const hardPriorityLevels = [1, 2, 3, 4] as const
 const hardPriorityLabels: Record<number, string> = {
-  1: '第一优先级',
-  2: '第二优先级',
-  3: '第三优先级',
-  4: '第四优先级'
+  1: '基础冲突',
+  2: '教师限制',
+  3: '固定安排',
+  4: '课程限制'
 }
+const lockedHardRuleKeys = new Set<RuleWeightHardKey>(['teacherConflict', 'classConflict'])
+const scoringSoftRuleKeys: RuleWeightSoftKey[] = ['teacherWeekDistribution', 'teacherDayDistribution', 'consecutive']
+const featureRuleKeys: RuleWeightSoftKey[] = ['oddEven', 'mainSecondary', 'courseDefault']
+const scoringSoftRuleKeySet = new Set<RuleWeightSoftKey>(scoringSoftRuleKeys)
+const featureRuleKeySet = new Set<RuleWeightSoftKey>(featureRuleKeys)
 
 function normalizeHardRuleLevel(priority: number): number {
   return Math.max(1, Math.min(4, Math.floor(Number(priority) || 1)))
@@ -732,21 +715,33 @@ const hardRuleBuckets = computed(() =>
 )
 const softRuleRows = computed(() =>
   ruleWeightConfig.value.rules
-    .filter((item) => item.mode === 'soft')
+    .filter((item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey))
     .map((item) => ({
       ...item,
       label: ruleWeightMeta[item.key].label,
       desc: ruleWeightMeta[item.key].desc
     }))
 )
+const featureRuleRows = computed(() =>
+  ruleWeightConfig.value.rules
+    .filter((item) => item.mode === 'soft' && featureRuleKeySet.has(item.key as RuleWeightSoftKey))
+    .map((item) => ({
+      ...item,
+      label: ruleWeightMeta[item.key].label,
+      desc: ruleWeightMeta[item.key].desc,
+      available: true
+    }))
+)
 const enabledSoftWeightTotal = computed(() =>
   ruleWeightConfig.value.rules
-    .filter((item) => item.mode === 'soft')
+    .filter((item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey))
     .filter((item) => item.enabled)
     .reduce((sum, item) => sum + item.weight, 0)
 )
 const enabledSoftRuleCount = computed(() =>
-  ruleWeightConfig.value.rules.filter((item) => item.mode === 'soft' && item.enabled).length
+  ruleWeightConfig.value.rules.filter(
+    (item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey) && item.enabled
+  ).length
 )
 const weightCampusOptions = computed(() => campusOptions.value)
 const weightGradeOptions = computed(() => {
@@ -765,29 +760,9 @@ const weightGradeOptions = computed(() => {
 function setHardRuleEnabled(key: RuleWeightRuleKey, enabled: boolean): void {
   const target = ruleWeightConfig.value.rules.find((item) => item.key === key)
   if (!target) return
-  target.enabled = enabled
+  target.enabled = lockedHardRuleKeys.has(key as RuleWeightHardKey) ? true : enabled
   target.mode = 'hard'
   if (target.weight > 0) target.weight = 0
-}
-
-function moveHardRuleLevel(key: RuleWeightRuleKey, delta: -1 | 1): void {
-  const target = ruleWeightConfig.value.rules.find((item) => item.key === key)
-  if (!target) return
-  target.priority = normalizeHardRuleLevel(target.priority + delta)
-  target.mode = 'hard'
-}
-
-function setRuleMode(key: RuleWeightRuleKey, mode: 'hard' | 'soft'): void {
-  const target = ruleWeightConfig.value.rules.find((item) => item.key === key)
-  if (!target) return
-  target.mode = mode
-  if (mode === 'hard') {
-    target.priority = normalizeHardRuleLevel(target.priority || 4)
-    target.weight = 0
-  } else {
-    target.priority = 4
-    if (target.weight <= 0) target.weight = 10
-  }
 }
 
 function setSoftRuleEnabled(key: RuleWeightRuleKey, enabled: boolean): void {
@@ -796,6 +771,9 @@ function setSoftRuleEnabled(key: RuleWeightRuleKey, enabled: boolean): void {
   target.enabled = enabled
   target.mode = 'soft'
   if (!enabled) target.weight = 0
+  if (enabled && target.weight <= 0) {
+    target.weight = defaultRuleWeightConfig.rules.find((item) => item.key === key)?.weight || 10
+  }
 }
 
 function setSoftRuleWeight(key: RuleWeightRuleKey, weight: number): void {
@@ -803,6 +781,18 @@ function setSoftRuleWeight(key: RuleWeightRuleKey, weight: number): void {
   if (!target) return
   target.mode = 'soft'
   target.weight = Math.max(0, Math.min(100, Math.floor(Number(weight) || 0)))
+}
+
+function setFeatureRuleEnabled(key: RuleWeightRuleKey, enabled: boolean): void {
+  const target = ruleWeightConfig.value.rules.find((item) => item.key === key)
+  if (!target) return
+  target.mode = 'soft'
+  target.enabled = enabled
+  target.weight = 0
+}
+
+function hardRuleLocked(key: RuleWeightRuleKey): boolean {
+  return lockedHardRuleKeys.has(key as RuleWeightHardKey)
 }
 
 const mainCampusOptions = computed(() => campusOptions.value)
@@ -964,7 +954,8 @@ function saveCurrentMainSecondary(): void {
 }
 
 function resetCourseDefaultConfig(): void {
-  courseDefaultConfig.value = { ...defaultCourseDefaultConfig }
+  courseDefaultConfig.value = cloneCourseDefaultConfig()
+  notify.success('默认规则已恢复。')
 }
 
 function saveCourseDefaultConfig(): void {
@@ -991,7 +982,9 @@ function loadCurrentRuleWeightConfig(): void {
 }
 
 function normalizeSoftWeights(): void {
-  const enabled = ruleWeightConfig.value.rules.filter((item) => item.mode === 'soft' && item.enabled)
+  const enabled = ruleWeightConfig.value.rules.filter(
+    (item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey) && item.enabled
+  )
   if (enabled.length === 0) return
   const currentTotal = enabled.reduce((sum, item) => sum + item.weight, 0)
 
@@ -999,7 +992,7 @@ function normalizeSoftWeights(): void {
     const base = Math.floor(100 / enabled.length)
     let remain = 100 - base * enabled.length
     ruleWeightConfig.value.rules = ruleWeightConfig.value.rules.map((item) => {
-      if (item.mode !== 'soft') return item
+      if (item.mode !== 'soft' || !scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey)) return item
       if (!item.enabled) return { ...item, weight: 0 }
       const next = base + (remain > 0 ? 1 : 0)
       if (remain > 0) remain -= 1
@@ -1031,7 +1024,7 @@ function normalizeSoftWeights(): void {
     cursor += 1
   }
   ruleWeightConfig.value.rules = ruleWeightConfig.value.rules.map((item) => {
-    if (item.mode !== 'soft') return item
+    if (item.mode !== 'soft' || !scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey)) return item
     return item.enabled ? { ...item, weight: floorMap.get(item.key) || 0 } : { ...item, weight: 0 }
   })
 }
@@ -1269,7 +1262,6 @@ const oddEvenForm = reactive({
   campus: '本校区',
   grade: '',
   classNames: [] as string[],
-  scope: '正课',
   oddCourse: '',
   evenCourse: ''
 })
@@ -1305,9 +1297,11 @@ const selectedAreaCampus = ref('')
 const selectedAreaGrade = ref('')
 const activeAreaSubject = ref('语文')
 const selectedAreaClassRanges = ref<string[]>([])
+const lastEditedAreaClassName = ref('')
 const selectedBanCampus = ref('')
 const selectedBanGrade = ref('')
 const selectedBanClassRanges = ref<string[]>([])
+const lastEditedBanClassName = ref('')
 
 watch(courseSlotMode, (mode) => {
   if (mode === 'ban') {
@@ -1394,28 +1388,60 @@ const visibleAreaClasses = computed(() => {
   return classes.filter((item) => set.has(item.className))
 })
 
-const selectedAreaRangeLabel = computed(() => {
-  const selected = areaClassRanges.value.filter((item) => selectedAreaClassRanges.value.includes(item.id))
-  if (selected.length === 0 || selected.length === areaClassRanges.value.length) return '全部班级'
-  return selected.map((item) => item.label).join('、')
-})
-
 const areaAllClassIds = computed(() => areaClassRanges.value.map((item) => item.id))
-const areaCheckAll = computed(() => {
-  const all = areaAllClassIds.value
-  if (all.length === 0) return false
-  return all.every((id) => selectedAreaClassRanges.value.includes(id))
-})
-const areaIndeterminate = computed(() => {
-  const all = areaAllClassIds.value
-  if (all.length === 0) return false
-  const selectedCount = all.filter((id) => selectedAreaClassRanges.value.includes(id)).length
-  return selectedCount > 0 && selectedCount < all.length
+const selectedAreaClassFilter = computed<string>({
+  get: () => {
+    const selected = selectedAreaClassRanges.value.filter((id) => areaAllClassIds.value.includes(id))
+    return selected.length === 1 ? selected[0] : '全部班级'
+  },
+  set: (value) => {
+    selectedAreaClassRanges.value = value === '全部班级' ? [...areaAllClassIds.value] : [value]
+  }
 })
 
-function onAreaCheckAllChange(checked: boolean | string | number): void {
-  const isChecked = Boolean(checked)
-  selectedAreaClassRanges.value = isChecked ? [...areaAllClassIds.value] : []
+const selectedAreaTemplateClass = computed(() => {
+  if (selectedAreaClassFilter.value !== '全部班级') {
+    return areaClassOptions.value.find((item) => item.id === selectedAreaClassFilter.value) ?? null
+  }
+  return areaClassOptions.value.find((item) => item.className === lastEditedAreaClassName.value)
+    ?? areaClassOptions.value[0]
+    ?? null
+})
+
+function applyAreaRuleToAllClasses(): void {
+  const sourceClass = selectedAreaTemplateClass.value
+  if (!sourceClass) {
+    notify.warning('请先选择一个班级作为应用模板。')
+    return
+  }
+
+  const sourceKey = buildAreaRuleKey(
+    selectedAreaCampus.value,
+    selectedAreaGrade.value,
+    activeAreaSubject.value,
+    sourceClass.className
+  )
+  const sourceSlots = courseAreaRuleMap.value.get(sourceKey)?.allowedSlots?.slice() ?? []
+  const targetClassNames = new Set(areaClassOptions.value.map((item) => item.className))
+  const retained = courseAreaRules.value.filter((item) => {
+    if (item.campus !== selectedAreaCampus.value) return true
+    if (item.grade !== selectedAreaGrade.value) return true
+    if (item.subject !== activeAreaSubject.value) return true
+    return !targetClassNames.has(item.className)
+  })
+  const copied = sourceSlots.length === 0
+    ? []
+    : areaClassOptions.value.map((classItem, index) => ({
+        id: `ca-${Date.now()}-${index}-${Math.floor(Math.random() * 100000)}`,
+        campus: selectedAreaCampus.value,
+        grade: selectedAreaGrade.value,
+        subject: activeAreaSubject.value,
+        className: classItem.className,
+        allowedSlots: [...sourceSlots]
+      }))
+
+  courseAreaRules.value = [...retained, ...copied]
+  notify.success(`已将${sourceClass.className}的允许排课设置同步到全部班级。`)
 }
 
 function normalizeAreaClassSelection(next: string[]): void {
@@ -1453,6 +1479,68 @@ const courseBanRuleMap = computed(() => {
   })
   return map
 })
+
+const configuredCourseBanRows = computed(() =>
+  courseBanRules.value
+    .filter((item) => {
+      if (selectedBanCampus.value && item.campus !== selectedBanCampus.value) return false
+      if (selectedBanGrade.value && item.grade !== selectedBanGrade.value) return false
+      if (activeBanSubject.value && item.subject !== activeBanSubject.value) return false
+      if (selectedBanClassFilter.value !== '全部班级') {
+        const selectedClass = banClassOptions.value.find((classItem) => classItem.id === selectedBanClassFilter.value)
+        if (selectedClass && item.className !== selectedClass.className) return false
+      }
+      return true
+    })
+    .slice()
+    .sort((a, b) =>
+      a.campus.localeCompare(b.campus, 'zh-CN')
+        || a.grade.localeCompare(b.grade, 'zh-CN')
+        || a.className.localeCompare(b.className, 'zh-CN')
+        || a.subject.localeCompare(b.subject, 'zh-CN')
+    )
+)
+
+const configuredCourseBanSlotTotal = computed(() =>
+  configuredCourseBanRows.value.reduce((total, item) => total + item.bannedSlots.length, 0)
+)
+
+function formatCourseSlots(slots: string[]): string {
+  const grouped = new Map<string, number[]>()
+  slots.forEach((slot) => {
+    const separatorIndex = slot.indexOf('-')
+    if (separatorIndex <= 0) return
+    const period = Number(slot.slice(0, separatorIndex))
+    const day = slot.slice(separatorIndex + 1)
+    if (!Number.isFinite(period) || !day) return
+    const periods = grouped.get(day) ?? []
+    periods.push(period)
+    grouped.set(day, periods)
+  })
+  return Array.from(grouped.entries())
+    .sort((a, b) => allAreaDays.indexOf(a[0]) - allAreaDays.indexOf(b[0]))
+    .map(([day, periods]) => `${day}：第${Array.from(new Set(periods)).sort((a, b) => a - b).join('、')}节`)
+    .join('；') || '--'
+}
+
+async function deleteCourseBanRule(rule: CourseBanRuleRecord): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${rule.campus} / ${rule.grade} / ${rule.className} / ${rule.subject}」的禁止排课设置吗？`,
+      '删除确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+  courseBanRules.value = courseBanRules.value.filter((item) => item.id !== rule.id)
+  notify.success('禁止排课设置已删除。')
+}
 
 const banCampusOptions = computed(() => campusOptions.value)
 const banGradeOptions = computed(() => {
@@ -1523,28 +1611,60 @@ const visibleBanClasses = computed(() => {
   return classes.filter((item) => set.has(item.className))
 })
 
-const selectedBanRangeLabel = computed(() => {
-  const selected = banClassRanges.value.filter((item) => selectedBanClassRanges.value.includes(item.id))
-  if (selected.length === 0 || selected.length === banClassRanges.value.length) return '全部班级'
-  return selected.map((item) => item.label).join('、')
-})
-
 const banAllClassIds = computed(() => banClassRanges.value.map((item) => item.id))
-const banCheckAll = computed(() => {
-  const all = banAllClassIds.value
-  if (all.length === 0) return false
-  return all.every((id) => selectedBanClassRanges.value.includes(id))
-})
-const banIndeterminate = computed(() => {
-  const all = banAllClassIds.value
-  if (all.length === 0) return false
-  const selectedCount = all.filter((id) => selectedBanClassRanges.value.includes(id)).length
-  return selectedCount > 0 && selectedCount < all.length
+const selectedBanClassFilter = computed<string>({
+  get: () => {
+    const selected = selectedBanClassRanges.value.filter((id) => banAllClassIds.value.includes(id))
+    return selected.length === 1 ? selected[0] : '全部班级'
+  },
+  set: (value) => {
+    selectedBanClassRanges.value = value === '全部班级' ? [...banAllClassIds.value] : [value]
+  }
 })
 
-function onBanCheckAllChange(checked: boolean | string | number): void {
-  const isChecked = Boolean(checked)
-  selectedBanClassRanges.value = isChecked ? [...banAllClassIds.value] : []
+const selectedBanTemplateClass = computed(() => {
+  if (selectedBanClassFilter.value !== '全部班级') {
+    return banClassOptions.value.find((item) => item.id === selectedBanClassFilter.value) ?? null
+  }
+  return banClassOptions.value.find((item) => item.className === lastEditedBanClassName.value)
+    ?? banClassOptions.value[0]
+    ?? null
+})
+
+function applyBanRuleToAllClasses(): void {
+  const sourceClass = selectedBanTemplateClass.value
+  if (!sourceClass) {
+    notify.warning('请先选择一个班级作为应用模板。')
+    return
+  }
+
+  const sourceKey = buildBanRuleKey(
+    selectedBanCampus.value,
+    selectedBanGrade.value,
+    activeBanSubject.value,
+    sourceClass.className
+  )
+  const sourceSlots = courseBanRuleMap.value.get(sourceKey)?.bannedSlots?.slice() ?? []
+  const targetClassNames = new Set(banClassOptions.value.map((item) => item.className))
+  const retained = courseBanRules.value.filter((item) => {
+    if (item.campus !== selectedBanCampus.value) return true
+    if (item.grade !== selectedBanGrade.value) return true
+    if (item.subject !== activeBanSubject.value) return true
+    return !targetClassNames.has(item.className)
+  })
+  const copied = sourceSlots.length === 0
+    ? []
+    : banClassOptions.value.map((classItem, index) => ({
+        id: `cbn-${Date.now()}-${index}-${Math.floor(Math.random() * 100000)}`,
+        campus: selectedBanCampus.value,
+        grade: selectedBanGrade.value,
+        subject: activeBanSubject.value,
+        className: classItem.className,
+        bannedSlots: [...sourceSlots]
+      }))
+
+  courseBanRules.value = [...retained, ...copied]
+  notify.success(`已将${sourceClass.className}的禁止排课设置同步到全部班级。`)
 }
 
 function normalizeBanClassSelection(next: string[]): void {
@@ -1580,6 +1700,7 @@ function classBanCellEnabled(className: string, period: number, day: string): bo
 
 function toggleClassBanCell(className: string, period: number, day: string): void {
   if (!selectedBanCampus.value || !selectedBanGrade.value || !activeBanSubject.value) return
+  lastEditedBanClassName.value = className
   const slot = `${period}-${day}`
   const key = buildBanRuleKey(selectedBanCampus.value, selectedBanGrade.value, activeBanSubject.value, className)
   const existing = courseBanRuleMap.value.get(key)
@@ -1614,11 +1735,11 @@ function clearCurrentBanRule(): void {
     return false
   })
   courseBanRules.value = rest
-  notify.success('已清空当前课程不排课设置。')
+  notify.success('已清空当前课程禁止排课设置。')
 }
 
 function saveCurrentBanRule(): void {
-  notify.success('课程不排课规则已保存。')
+  notify.success('课程禁止排课规则已保存。')
 }
 
 const oddEvenClassOptions = computed(() => {
@@ -1641,7 +1762,6 @@ const filteredOddEvenRules = computed(() =>
     if (selectedOddEvenCampus.value !== '全部校区' && item.campus !== selectedOddEvenCampus.value) return false
     if (selectedOddEvenGrade.value !== '全部年级' && item.grade !== selectedOddEvenGrade.value) return false
     if (selectedOddEvenClass.value !== '全部班级' && !item.classNames.includes(selectedOddEvenClass.value)) return false
-    if (selectedOddEvenScope.value !== '全部范围' && item.scope !== selectedOddEvenScope.value) return false
     if (selectedOddEvenCourse.value !== '全部课程') {
       const matchOdd = item.oddCourse === selectedOddEvenCourse.value
       const matchEven = item.evenCourse === selectedOddEvenCourse.value
@@ -1666,15 +1786,16 @@ const consecutiveGradeOptions = computed(() => {
 })
 const consecutiveClassOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedConsecutiveCampus.value)
-  if (!campusId || !selectedConsecutiveGrade.value) return [] as string[]
-  return Array.from(
+  if (!campusId || !selectedConsecutiveGrade.value) return ['全部班级']
+  const classNames = Array.from(
     new Set(
       adminBaseSnapshot.value.classRecords
         .filter((item) => item.campusId === campusId && item.grade === selectedConsecutiveGrade.value)
         .map((item) => item.className)
         .filter(Boolean)
-    )
+      )
   )
+  return ['全部班级', ...classNames]
 })
 const consecutiveSubjectOptions = computed(() => {
   const list = Array.from(new Set(adminBaseSnapshot.value.courses.map((item) => item.name).filter(Boolean)))
@@ -1716,44 +1837,111 @@ function ensureCurrentConsecutiveSetting(): ConsecutiveSetting {
 }
 
 const currentConsecutiveSetting = computed(() => ensureCurrentConsecutiveSetting())
-const currentConsecutiveDefaultRule = computed(() => currentConsecutiveSetting.value.defaultRule)
-const currentConsecutiveOverrides = computed(() =>
-  Object.entries(currentConsecutiveSetting.value.classOverrides).map(([className, rule]) => ({
-    className,
-    ...rule
-  }))
+const currentConsecutiveRule = computed(() => {
+  if (selectedConsecutiveClass.value === '全部班级') {
+    return currentConsecutiveSetting.value.defaultRule
+  }
+  return currentConsecutiveSetting.value.classOverrides[selectedConsecutiveClass.value]
+    ?? currentConsecutiveSetting.value.defaultRule
+})
+const configuredConsecutiveRows = computed(() => {
+  const rows: Array<{
+    id: string
+    settingKey: string
+    campus: string
+    grade: string
+    subject: string
+    className: string
+    weeklyConsecutiveCount: number | null
+    preferredDays: string[]
+  }> = []
+  const appendRule = (
+    settingKey: string,
+    campus: string,
+    grade: string,
+    subject: string,
+    className: string,
+    rule: ConsecutiveRuleValue
+  ) => {
+    const preferredDays = Array.isArray(rule.preferredDays) ? rule.preferredDays : []
+    if (rule.weeklyConsecutiveCount == null && preferredDays.length === 0) return
+    rows.push({
+      id: `${settingKey}::${className}`,
+      settingKey,
+      campus,
+      grade,
+      subject,
+      className,
+      weeklyConsecutiveCount: rule.weeklyConsecutiveCount,
+      preferredDays
+    })
+  }
+  Object.entries(consecutiveSettingMap.value).forEach(([settingKey, setting]) => {
+    const [campus = '-', grade = '-', subject = '-'] = settingKey.split('::')
+    appendRule(settingKey, campus, grade, subject, '全部班级', setting.defaultRule)
+    Object.entries(setting.classOverrides).forEach(([className, rule]) => {
+      appendRule(settingKey, campus, grade, subject, className, rule)
+    })
+  })
+  return rows.sort((a, b) =>
+    a.campus.localeCompare(b.campus, 'zh-CN')
+      || a.grade.localeCompare(b.grade, 'zh-CN')
+      || a.subject.localeCompare(b.subject, 'zh-CN')
+      || a.className.localeCompare(b.className, 'zh-CN')
+  )
+})
+const configuredConsecutiveWeeklyTotal = computed(() =>
+  configuredConsecutiveRows.value.reduce((total, row) => total + (row.weeklyConsecutiveCount ?? 0), 0)
 )
 const consecutiveDefaultWeeklyCount = computed<number | undefined>({
-  get: () => currentConsecutiveDefaultRule.value.weeklyConsecutiveCount ?? undefined,
+  get: () => currentConsecutiveRule.value.weeklyConsecutiveCount ?? undefined,
   set: (value) => updateWeeklyConsecutiveCount(value ?? null)
 })
 const consecutiveDefaultPreferredDays = computed<string[]>({
-  get: () => [...(currentConsecutiveDefaultRule.value.preferredDays || [])],
+  get: () => [...(currentConsecutiveRule.value.preferredDays || [])],
   set: (value) => updatePreferredDays((value || []).map((item) => String(item || '')))
 })
 
-function updateWeeklyConsecutiveCount(value?: number | null): void {
+function ensureSelectedConsecutiveRule(): ConsecutiveRuleValue {
   const current = ensureCurrentConsecutiveSetting()
-  current.defaultRule.weeklyConsecutiveCount = normalizeLimitedInt(value ?? null, 0, 5)
+  const className = selectedConsecutiveClass.value
+  if (className === '全部班级') return current.defaultRule
+  const existing = current.classOverrides[className]
+  if (existing) return existing
+  const created: ConsecutiveRuleValue = {
+    weeklyConsecutiveCount: current.defaultRule.weeklyConsecutiveCount,
+    preferredDays: [...(current.defaultRule.preferredDays || [])]
+  }
+  current.classOverrides = {
+    ...current.classOverrides,
+    [className]: created
+  }
+  return created
+}
+
+function updateWeeklyConsecutiveCount(value?: number | null): void {
+  const rule = ensureSelectedConsecutiveRule()
+  rule.weeklyConsecutiveCount = normalizeLimitedInt(value ?? null, 0, 5)
 }
 
 function updatePreferredDays(days: string[]): void {
-  const current = ensureCurrentConsecutiveSetting()
+  const rule = ensureSelectedConsecutiveRule()
   const normalized = Array.from(new Set(days.filter((day) => consecutiveWeekdays.includes(day))))
-  current.defaultRule.preferredDays = normalized
+  rule.preferredDays = normalized
 }
 
 function clearCurrentConsecutiveSetting(): void {
-  const key = consecutiveSettingKey()
-  consecutiveSettingMap.value = {
-    ...consecutiveSettingMap.value,
-    [key]: {
-      defaultRule: {
-        weeklyConsecutiveCount: null,
-        preferredDays: []
-      },
-      classOverrides: {}
+  const current = ensureCurrentConsecutiveSetting()
+  const className = selectedConsecutiveClass.value
+  if (className === '全部班级') {
+    current.defaultRule = {
+      weeklyConsecutiveCount: null,
+      preferredDays: []
     }
+  } else {
+    const next = { ...current.classOverrides }
+    delete next[className]
+    current.classOverrides = next
   }
 }
 
@@ -1762,44 +1950,44 @@ function saveCurrentConsecutiveSetting(): void {
   notify.success('连堂课规则已暂存。')
 }
 
-function openConsecutiveClassDialog(className = ''): void {
-  if (consecutiveClassOptions.value.length === 0) {
-    notify.warning('当前年级暂无班级可设置。')
+async function removeConfiguredConsecutiveRule(row: (typeof configuredConsecutiveRows.value)[number]): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${row.campus} / ${row.grade} / ${row.className} / ${row.subject}」的连堂课设置吗？`,
+      '删除确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消'
+      }
+    )
+  } catch {
     return
   }
-  const defaultRule = currentConsecutiveDefaultRule.value
-  const existing = className ? currentConsecutiveSetting.value.classOverrides[className] : undefined
-  consecutiveClassDialogError.value = ''
-  consecutiveClassForm.className = className || consecutiveClassOptions.value[0] || ''
-  consecutiveClassForm.weeklyConsecutiveCount = existing?.weeklyConsecutiveCount ?? defaultRule.weeklyConsecutiveCount
-  consecutiveClassForm.preferredDays = [...(existing?.preferredDays ?? defaultRule.preferredDays ?? [])]
-  consecutiveClassDialogVisible.value = true
-}
-
-function saveConsecutiveClassOverride(): void {
-  const className = consecutiveClassForm.className
-  if (!className || !consecutiveClassOptions.value.includes(className)) {
-    consecutiveClassDialogError.value = '请选择有效班级。'
-    return
+  const setting = consecutiveSettingMap.value[row.settingKey]
+  if (!setting) return
+  const nextSetting: ConsecutiveSetting = {
+    defaultRule: {
+      weeklyConsecutiveCount: setting.defaultRule.weeklyConsecutiveCount,
+      preferredDays: [...(setting.defaultRule.preferredDays || [])]
+    },
+    classOverrides: { ...setting.classOverrides }
   }
-  const current = ensureCurrentConsecutiveSetting()
-  const rule: ConsecutiveRuleValue = {
-    weeklyConsecutiveCount: normalizeLimitedInt(consecutiveClassForm.weeklyConsecutiveCount, 0, 5),
-    preferredDays: Array.from(new Set(consecutiveClassForm.preferredDays.filter((day) => consecutiveWeekdays.includes(day))))
+  if (row.className === '全部班级') {
+    nextSetting.defaultRule = { weeklyConsecutiveCount: null, preferredDays: [] }
+  } else {
+    delete nextSetting.classOverrides[row.className]
   }
-  current.classOverrides = {
-    ...current.classOverrides,
-    [className]: rule
+  const hasDefaultRule = nextSetting.defaultRule.weeklyConsecutiveCount != null
+    || nextSetting.defaultRule.preferredDays.length > 0
+  const nextMap = { ...consecutiveSettingMap.value }
+  if (!hasDefaultRule && Object.keys(nextSetting.classOverrides).length === 0) {
+    delete nextMap[row.settingKey]
+  } else {
+    nextMap[row.settingKey] = nextSetting
   }
-  consecutiveClassDialogVisible.value = false
-  notify.success(`已保存「${className}」特殊设置。`)
-}
-
-function removeConsecutiveClassOverride(className: string): void {
-  const current = ensureCurrentConsecutiveSetting()
-  const next = { ...current.classOverrides }
-  delete next[className]
-  current.classOverrides = next
+  consecutiveSettingMap.value = nextMap
+  notify.success('连堂课设置已删除。')
 }
 
 function buildAreaRuleKey(campus: string, grade: string, subject: string, className: string): string {
@@ -1814,6 +2002,50 @@ const courseAreaRuleMap = computed(() => {
   return map
 })
 
+const configuredCourseAreaRows = computed(() =>
+  courseAreaRules.value
+    .filter((item) => {
+      if (selectedAreaCampus.value && item.campus !== selectedAreaCampus.value) return false
+      if (selectedAreaGrade.value && item.grade !== selectedAreaGrade.value) return false
+      if (activeAreaSubject.value && item.subject !== activeAreaSubject.value) return false
+      if (selectedAreaClassFilter.value !== '全部班级') {
+        const selectedClass = areaClassOptions.value.find((classItem) => classItem.id === selectedAreaClassFilter.value)
+        if (selectedClass && item.className !== selectedClass.className) return false
+      }
+      return true
+    })
+    .slice()
+    .sort((a, b) =>
+      a.campus.localeCompare(b.campus, 'zh-CN')
+        || a.grade.localeCompare(b.grade, 'zh-CN')
+        || a.className.localeCompare(b.className, 'zh-CN')
+        || a.subject.localeCompare(b.subject, 'zh-CN')
+    )
+)
+
+const configuredCourseAreaSlotTotal = computed(() =>
+  configuredCourseAreaRows.value.reduce((total, item) => total + item.allowedSlots.length, 0)
+)
+
+async function deleteCourseAreaRule(rule: CourseAreaRuleRecord): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${rule.campus} / ${rule.grade} / ${rule.className} / ${rule.subject}」的允许排课设置吗？`,
+      '删除确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+  courseAreaRules.value = courseAreaRules.value.filter((item) => item.id !== rule.id)
+  notify.success('允许排课设置已删除。')
+}
+
 function classAreaCellEnabled(className: string, period: number, day: string): boolean {
   const key = buildAreaRuleKey(selectedAreaCampus.value, selectedAreaGrade.value, activeAreaSubject.value, className)
   const rule = courseAreaRuleMap.value.get(key)
@@ -1823,6 +2055,7 @@ function classAreaCellEnabled(className: string, period: number, day: string): b
 
 function toggleClassAreaCell(className: string, period: number, day: string): void {
   if (!selectedAreaCampus.value || !selectedAreaGrade.value || !activeAreaSubject.value) return
+  lastEditedAreaClassName.value = className
   const slot = `${period}-${day}`
   const key = buildAreaRuleKey(selectedAreaCampus.value, selectedAreaGrade.value, activeAreaSubject.value, className)
   const existing = courseAreaRuleMap.value.get(key)
@@ -1857,11 +2090,11 @@ function clearCurrentAreaRule(): void {
     return false
   })
   courseAreaRules.value = rest
-  notify.success('已清空当前课程排课区域设置。')
+  notify.success('已清空当前课程允许排课设置。')
 }
 
 function saveCurrentAreaRule(): void {
-  notify.success('课程排课区域规则已保存。')
+  notify.success('课程允许排课规则已保存。')
 }
 
 function fixedPointScopeFilter(item: GlobalFixedPointRecord): boolean {
@@ -2296,8 +2529,40 @@ function subjectHasBan(subject: string): boolean {
   return courseBanRules.value.some((item) => item.subject === subject && item.bannedSlots.length > 0)
 }
 
-function clearCombineRules(): void {
-  combineRules.value = []
+function toggleCombineRuleSelection(ruleId: string, checked: boolean): void {
+  if (checked) {
+    selectedCombineRuleIds.value = Array.from(new Set([...selectedCombineRuleIds.value, ruleId]))
+    return
+  }
+  selectedCombineRuleIds.value = selectedCombineRuleIds.value.filter((id) => id !== ruleId)
+}
+
+function toggleAllFilteredCombineRules(checked: boolean): void {
+  selectedCombineRuleIds.value = checked ? filteredCombineRules.value.map((item) => item.id) : []
+}
+
+async function deleteSelectedCombineRules(): Promise<void> {
+  const ids = Array.from(new Set(selectedCombineRuleIds.value))
+  if (ids.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除已选的 ${ids.length} 条合班课规则吗？删除后无法撤销。`,
+      '批量删除确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+  const idSet = new Set(ids)
+  combineRules.value = combineRules.value.filter((item) => !idSet.has(item.id))
+  selectedCombineRuleIds.value = []
+  normalizeCombineRuleOrder()
+  notify.success(`已删除 ${ids.length} 条合班课规则。`)
 }
 
 function normalizeCombineRuleOrder(): void {
@@ -2315,7 +2580,6 @@ function openCreateCombineDialog(): void {
   combineForm.grade = selectedCombineGrade.value === '全部年级' ? combineGradeOptions.value[1] || '' : selectedCombineGrade.value
   combineForm.classNames = []
   combineForm.course = selectedCombineCourse.value === '全部课程' ? combineCourseOptions.value[1] || '' : selectedCombineCourse.value
-  combineForm.scope = selectedCombineScope.value === '全部范围' ? '正课' : selectedCombineScope.value
   combineDialogVisible.value = true
 }
 
@@ -2327,7 +2591,6 @@ function openEditCombineDialog(rule: CourseCombineRule): void {
   combineForm.grade = rule.grade
   combineForm.classNames = [...rule.classNames]
   combineForm.course = rule.course
-  combineForm.scope = rule.scope
   combineDialogVisible.value = true
 }
 
@@ -2339,10 +2602,9 @@ function submitCombineDialog(): void {
   const campus = combineForm.campus.trim()
   const grade = combineForm.grade.trim()
   const course = combineForm.course.trim()
-  const scope = combineForm.scope.trim()
   const classNames = combineForm.classNames.map((item) => item.trim()).filter(Boolean)
 
-  if (!campus || !grade || !course || !scope) {
+  if (!campus || !grade || !course) {
     combineDialogError.value = '请完整填写所有字段。'
     return
   }
@@ -2358,8 +2620,7 @@ function submitCombineDialog(): void {
       campus,
       grade,
       classNames,
-      course,
-      scope
+      course
     })
     normalizeCombineRuleOrder()
     closeCombineDialog()
@@ -2373,8 +2634,7 @@ function submitCombineDialog(): void {
           campus,
           grade,
           classNames,
-          course,
-          scope
+          course
         }
       : item
   )
@@ -2433,7 +2693,6 @@ function openCreateOddEvenDialog(): void {
   oddEvenForm.campus = selectedOddEvenCampus.value === '全部校区' ? campusOptions.value[0] || '本校区' : selectedOddEvenCampus.value
   oddEvenForm.grade = selectedOddEvenGrade.value === '全部年级' ? oddEvenGradeOptions.value[1] || '' : selectedOddEvenGrade.value
   oddEvenForm.classNames = []
-  oddEvenForm.scope = selectedOddEvenScope.value === '全部范围' ? '正课' : selectedOddEvenScope.value
   oddEvenForm.oddCourse = selectedOddEvenCourse.value === '全部课程' ? oddEvenCourseOptions.value[1] || '' : selectedOddEvenCourse.value
   oddEvenForm.evenCourse = oddEvenCourseOptions.value.find((item) => item !== '全部课程' && item !== oddEvenForm.oddCourse) || ''
   oddEvenDialogVisible.value = true
@@ -2446,7 +2705,6 @@ function openEditOddEvenDialog(rule: OddEvenRule): void {
   oddEvenForm.campus = rule.campus
   oddEvenForm.grade = rule.grade
   oddEvenForm.classNames = [...rule.classNames]
-  oddEvenForm.scope = rule.scope
   oddEvenForm.oddCourse = rule.oddCourse
   oddEvenForm.evenCourse = rule.evenCourse
   oddEvenDialogVisible.value = true
@@ -2459,12 +2717,11 @@ function closeOddEvenDialog(): void {
 function submitOddEvenDialog(): void {
   const campus = oddEvenForm.campus.trim()
   const grade = oddEvenForm.grade.trim()
-  const scope = oddEvenForm.scope.trim()
   const oddCourse = oddEvenForm.oddCourse.trim()
   const evenCourse = oddEvenForm.evenCourse.trim()
   const classNames = oddEvenForm.classNames.map((item) => item.trim()).filter(Boolean)
 
-  if (!campus || !grade || !scope || !oddCourse || !evenCourse) {
+  if (!campus || !grade || !oddCourse || !evenCourse) {
     oddEvenDialogError.value = '请完整填写所有字段。'
     return
   }
@@ -2485,7 +2742,6 @@ function submitOddEvenDialog(): void {
       campus,
       grade,
       classNames,
-      scope,
       oddCourse,
       evenCourse
     })
@@ -2500,7 +2756,6 @@ function submitOddEvenDialog(): void {
           campus,
           grade,
           classNames,
-          scope,
           oddCourse,
           evenCourse
         }
@@ -2545,7 +2800,6 @@ function addOddEvenRule(): void {
   openCreateOddEvenDialog()
 }
 
-const activeStepLabel = computed(() => steps.find((step) => step.id === activeStep.value)?.label ?? '')
 const commonRuleStepIds = new Set([
   'course-main',
   'course-fixed',
@@ -2784,6 +3038,12 @@ watch(consecutiveCampusOptions, (items) => {
 watch(consecutiveGradeOptions, (items) => {
   if (!items.includes(selectedConsecutiveGrade.value)) {
     selectedConsecutiveGrade.value = items[0] ?? ''
+  }
+}, { immediate: true })
+
+watch(consecutiveClassOptions, (items) => {
+  if (!items.includes(selectedConsecutiveClass.value)) {
+    selectedConsecutiveClass.value = '全部班级'
   }
 }, { immediate: true })
 
@@ -3089,9 +3349,13 @@ onMounted(() => {
   window.addEventListener('scroll', handleCloseFixedPointContextMenu, true)
   window.addEventListener('focus', handleWindowFocusSyncAdminBase)
   void (async () => {
-    const latestSnapshot = await hydrateRuleSettingsSnapshotFromApi()
-    applyRuleSettingsSnapshot(latestSnapshot)
-    await refreshAdminBaseOverviewIfNeeded(true)
+    try {
+      const latestSnapshot = await hydrateRuleSettingsSnapshotFromApi()
+      applyRuleSettingsSnapshot(latestSnapshot)
+      await refreshAdminBaseOverviewIfNeeded(true)
+    } finally {
+      rulesReady.value = true
+    }
   })()
 })
 
@@ -3105,10 +3369,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', handleWindowFocusSyncAdminBase)
 })
 
-function jumpToRulePage(stepId: string) {
-  activeStep.value = stepId
-}
-
 const selectedCommonRule = computed(
   () => commonRuleCards.find((item) => item.id === selectedCommonRuleId.value) ?? commonRuleCards[0]
 )
@@ -3116,10 +3376,29 @@ const selectedTeacherRule = computed(
   () => teacherRuleCards.find((item) => item.id === selectedTeacherRuleId.value) ?? teacherRuleCards[0]
 )
 
-const showCommonRuleTabs = computed(() => activeStep.value === 'course-common' || commonRuleStepIds.has(activeStep.value))
 const commonRuleOpenedTabs = ref<CommonRuleTab[]>([{ id: 'course-common', title: '课程规则', closable: false }])
 const activeCommonRuleTab = ref('course-common')
 const hasExtraCommonRuleTabs = computed(() => commonRuleOpenedTabs.value.length > 1)
+const showCommonRuleTabs = computed(
+  () =>
+    (activeStep.value === 'course-common' || commonRuleStepIds.has(activeStep.value)) &&
+    (hasExtraCommonRuleTabs.value || activeCommonRuleTab.value !== 'course-common')
+)
+
+function normalizeCommonRuleTabClosability(): void {
+  const onlyOneTab = commonRuleOpenedTabs.value.length === 1
+  commonRuleOpenedTabs.value = commonRuleOpenedTabs.value.map((item) => ({
+    ...item,
+    closable: onlyOneTab ? false : item.id !== 'course-common'
+  }))
+}
+
+function ensureCourseCommonTab(): void {
+  if (!commonRuleOpenedTabs.value.some((item) => item.id === 'course-common')) {
+    commonRuleOpenedTabs.value.unshift({ id: 'course-common', title: '课程规则', closable: false })
+  }
+  normalizeCommonRuleTabClosability()
+}
 
 function syncCommonRuleStep(stepId: string): void {
   if (!commonRuleStepIds.has(stepId)) return
@@ -3128,6 +3407,7 @@ function syncCommonRuleStep(stepId: string): void {
   selectedCommonRuleId.value = stepId
   if (!commonRuleOpenedTabs.value.some((item) => item.id === stepId)) {
     commonRuleOpenedTabs.value.push({ id: stepId, title: card.title, closable: true })
+    normalizeCommonRuleTabClosability()
   }
 }
 
@@ -3139,6 +3419,7 @@ function openCommonRuleTab(ruleId: string): void {
 
 function switchCommonRuleTab(tabId: string): void {
   if (tabId === 'course-common') {
+    ensureCourseCommonTab()
     activeCommonRuleTab.value = 'course-common'
     activeStep.value = 'course-common'
     return
@@ -3154,14 +3435,21 @@ function removeCommonRuleTab(tabId: string): void {
   const index = commonRuleOpenedTabs.value.findIndex((item) => item.id === tabId)
   if (index < 0) return
   commonRuleOpenedTabs.value.splice(index, 1)
-  if (activeCommonRuleTab.value !== tabId) return
-  const fallback = commonRuleOpenedTabs.value[Math.max(index - 1, 0)]?.id ?? 'course-common'
-  switchCommonRuleTab(fallback)
+  normalizeCommonRuleTabClosability()
+  if (activeCommonRuleTab.value === tabId) {
+    const fallback = commonRuleOpenedTabs.value[Math.max(index - 1, 0)]?.id ?? 'course-common'
+    switchCommonRuleTab(fallback)
+  }
 }
 
-function clearExtraCommonRuleTabs(): void {
-  commonRuleOpenedTabs.value = [{ id: 'course-common', title: '课程规则', closable: false }]
-  switchCommonRuleTab('course-common')
+function keepOnlyCurrentCommonRuleTab(): void {
+  const current =
+    commonRuleOpenedTabs.value.find((item) => item.id === activeCommonRuleTab.value) ??
+    commonRuleOpenedTabs.value[0]
+  if (!current) return
+  commonRuleOpenedTabs.value = [{ ...current, closable: false }]
+  activeCommonRuleTab.value = current.id
+  activeStep.value = current.id
 }
 
 function selectCommonRule(ruleId: string) {
@@ -3177,6 +3465,14 @@ function openTeacherRulePage(ruleId: string): void {
   activeStep.value = ruleId
 }
 
+function openRuleSection(stepId: string): void {
+  if (stepId === 'course-common') {
+    switchCommonRuleTab('course-common')
+    return
+  }
+  activeStep.value = stepId
+}
+
 watch(
   () => activeStep.value,
   (stepId, prevStepId) => {
@@ -3186,6 +3482,7 @@ watch(
       return
     }
     if (stepId === 'course-common') {
+      ensureCourseCommonTab()
       activeCommonRuleTab.value = 'course-common'
       return
     }
@@ -3205,24 +3502,31 @@ watch(
 </script>
 
 <template>
-  <article class="panel rule-settings-page">
-    <aside class="rule-order">
-      <h3>设置顺序</h3>
+  <AppContentSkeleton v-if="!rulesReady" variant="form" />
+  <article v-else class="panel rule-settings-page">
+    <header class="rule-module-head">
+      <div>
+        <h1>排课规则设置</h1>
+        <p>统一管理默认规则、课程规则、教师规则和权重配置。</p>
+      </div>
+    </header>
+
+    <nav class="rule-primary-nav" aria-label="排课规则分类">
       <el-menu
         :default-active="menuActiveStep"
-        class="rule-order-menu"
-        @select="(index) => (activeStep = index)"
+        mode="horizontal"
+        class="rule-primary-menu"
+        @select="openRuleSection"
       >
         <el-menu-item
           v-for="step in steps"
           :key="step.id"
           :index="step.id"
-          :class="{ 'is-sub': step.sub }"
         >
           {{ step.label }}
         </el-menu-item>
       </el-menu>
-    </aside>
+    </nav>
 
     <section class="rule-content">
       <div v-if="showCommonRuleTabs" class="common-rule-tabs-wrap">
@@ -3246,147 +3550,51 @@ watch(
             size="small"
             type="primary"
             plain
-            @click="clearExtraCommonRuleTabs"
+            @click="keepOnlyCurrentCommonRuleTab"
           >
-            清空多余 Tabs
+            关闭其他
           </el-button>
         </div>
       </div>
 
-      <template v-if="activeStep === 'admin-base'">
-        <header class="rule-head">
-          <div>
-            <h1>行政班基础信息</h1>
-            <p>数据看板：展示当前学校基础数据中的校区、班级、教师、学生概览。</p>
-          </div>
-          <div class="rule-head-actions">
-            <el-button size="small" :loading="adminBaseLoading" @click="loadAdminBaseOverview">刷新概览</el-button>
-          </div>
-        </header>
-
-        <section class="rule-section admin-base-dashboard">
-          <el-row :gutter="12" class="admin-kpi-row">
-            <el-col :xs="12" :sm="12" :md="6">
-              <el-card shadow="hover" class="admin-kpi-card">
-                <p class="admin-kpi-title">校区数</p>
-                <strong>{{ adminCampusTotal }}</strong>
-              </el-card>
-            </el-col>
-            <el-col :xs="12" :sm="12" :md="6">
-              <el-card shadow="hover" class="admin-kpi-card">
-                <p class="admin-kpi-title">班级数</p>
-                <strong>{{ adminClassTotal }}</strong>
-              </el-card>
-            </el-col>
-            <el-col :xs="12" :sm="12" :md="6">
-              <el-card shadow="hover" class="admin-kpi-card">
-                <p class="admin-kpi-title">教师数</p>
-                <strong>{{ adminTeacherTotal }}</strong>
-              </el-card>
-            </el-col>
-            <el-col :xs="12" :sm="12" :md="6">
-              <el-card shadow="hover" class="admin-kpi-card">
-                <p class="admin-kpi-title">学生数</p>
-                <strong>{{ adminStudentTotal }}</strong>
-              </el-card>
-            </el-col>
-          </el-row>
-
-          <div class="admin-panel-grid">
-            <el-card shadow="never" class="admin-panel-card">
-              <template #header>
-                <div class="admin-panel-head">校区数据分布</div>
-              </template>
-              <el-table :data="adminCampusSummary" stripe border class="admin-element-table" empty-text="暂无校区数据">
-                <el-table-column prop="schoolName" label="学校名称" min-width="180" />
-                <el-table-column prop="campusName" label="校区" min-width="140" />
-                <el-table-column prop="classCount" label="班级数" width="100" align="center" />
-                <el-table-column prop="teacherCount" label="教师数" width="100" align="center" />
-                <el-table-column prop="studentCount" label="学生数" width="100" align="center" />
-              </el-table>
-            </el-card>
-
-            <el-card shadow="never" class="admin-panel-card">
-              <template #header>
-                <div class="admin-panel-head">学段数据分布</div>
-              </template>
-              <el-table :data="adminStageSummary" stripe border class="admin-element-table" empty-text="暂无学段数据">
-                <el-table-column label="学段" min-width="120" align="center">
-                  <template #default="{ row }">
-                    <el-tag :type="row.stage === '小学' ? 'success' : 'warning'" effect="light">{{ row.stage }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="classCount" label="班级数" min-width="120" align="center" />
-                <el-table-column prop="studentCount" label="学生数" min-width="120" align="center" />
-              </el-table>
-            </el-card>
-          </div>
-
-          <p v-if="!adminHasData" class="coming-soon">暂无数据，请先在基础数据模块录入班级、教师、学生信息。</p>
-        </section>
-      </template>
-
-      <template v-else-if="activeStep === 'course-rules'">
-        <header class="rule-head">
-          <div>
-            <h1>规则管理</h1>
-            <p>模块分为默认规则、课程规则、教师规则三部分，按需进入对应配置页。</p>
-          </div>
-        </header>
-
-        <section class="rule-section rule-overview-page">
-          <div class="rule-overview-grid">
-            <el-card
-              v-for="item in ruleManageCards"
-              :key="`rm-${item.id}`"
-              shadow="hover"
-              class="rule-overview-card"
-              @click="jumpToRulePage(item.id)"
-            >
-              <h3>{{ item.title }}</h3>
-              <p>{{ item.desc }}</p>
-              <div class="rule-overview-card-actions">
-                <el-button type="primary" link @click.stop="jumpToRulePage(item.id)">进入</el-button>
-              </div>
-            </el-card>
-          </div>
-        </section>
-      </template>
-
-      <template v-else-if="activeStep === 'course-common'">
+      <template v-if="activeStep === 'course-common'">
         <header class="rule-head">
           <div>
             <h1>课程规则</h1>
-            <p>课程规则用于配置日常排课限制与策略。</p>
+            <p>配置课程维度的排课限制、组合关系与时段策略。</p>
           </div>
         </header>
 
         <section class="rule-section rule-overview-page">
-          <div class="rule-overview-grid rule-overview-grid-common">
-            <el-card
+          <div class="rule-directory-layout">
+            <nav class="rule-directory-list" aria-label="课程规则目录">
+              <button
               v-for="item in commonRuleCards"
               :key="`rc-${item.id}`"
-              shadow="never"
-              :class="['rule-overview-card', { active: selectedCommonRuleId === item.id }]"
+              type="button"
+              :class="['rule-directory-item', { active: selectedCommonRuleId === item.id }]"
               @click="selectCommonRule(item.id)"
-            >
-              <h3>{{ item.title }}</h3>
-              <p>{{ item.desc }}</p>
-              <div class="rule-overview-card-actions">
-                <el-button type="primary" link @click.stop="openCommonRuleTab(item.id)">配置</el-button>
+              >
+                <span class="rule-directory-title">{{ item.title }}</span>
+                <span class="rule-directory-desc">{{ item.desc }}</span>
+              </button>
+            </nav>
+
+            <el-card shadow="never" class="rule-guide-card">
+              <div class="rule-guide-head">
+                <div>
+                  <h3>{{ selectedCommonRule.title }}</h3>
+                  <p class="rule-guide-desc">{{ selectedCommonRule.desc }}</p>
+                </div>
+                <el-button type="primary" @click="openCommonRuleTab(selectedCommonRule.id)">进入设置</el-button>
+              </div>
+              <div class="rule-guide-list">
+                <p v-for="(item, index) in selectedCommonRule.usage" :key="`guide-${selectedCommonRule.id}-${index}`">
+                  <span>{{ index + 1 }}</span>{{ item }}
+                </p>
               </div>
             </el-card>
           </div>
-
-          <el-card shadow="never" class="rule-guide-card">
-            <h3>{{ selectedCommonRule.title }}</h3>
-            <p class="rule-guide-desc">{{ selectedCommonRule.desc }}</p>
-            <div class="rule-guide-list">
-              <p v-for="(item, index) in selectedCommonRule.usage" :key="`guide-${selectedCommonRule.id}-${index}`">
-                {{ index + 1 }}. {{ item }}
-              </p>
-            </div>
-          </el-card>
         </section>
       </template>
 
@@ -3399,31 +3607,35 @@ watch(
         </header>
 
         <section class="rule-section rule-overview-page">
-          <div class="rule-overview-grid rule-overview-grid-common">
-            <el-card
-              v-for="item in teacherRuleCards"
-              :key="`rt-${item.id}`"
-              shadow="never"
-              :class="['rule-overview-card', { active: selectedTeacherRuleId === item.id }]"
-              @click="selectTeacherRule(item.id)"
-            >
-              <h3>{{ item.title }}</h3>
-              <p>{{ item.desc }}</p>
-              <div class="rule-overview-card-actions">
-                <el-button type="primary" link @click.stop="openTeacherRulePage(item.id)">配置</el-button>
+          <div class="rule-directory-layout rule-directory-layout-teacher">
+            <nav class="rule-directory-list" aria-label="教师规则目录">
+              <button
+                v-for="item in teacherRuleCards"
+                :key="`rt-${item.id}`"
+                type="button"
+                :class="['rule-directory-item', { active: selectedTeacherRuleId === item.id }]"
+                @click="selectTeacherRule(item.id)"
+              >
+                <span class="rule-directory-title">{{ item.title }}</span>
+                <span class="rule-directory-desc">{{ item.desc }}</span>
+              </button>
+            </nav>
+
+            <el-card shadow="never" class="rule-guide-card">
+              <div class="rule-guide-head">
+                <div>
+                  <h3>{{ selectedTeacherRule.title }}</h3>
+                  <p class="rule-guide-desc">{{ selectedTeacherRule.desc }}</p>
+                </div>
+                <el-button type="primary" @click="openTeacherRulePage(selectedTeacherRule.id)">进入设置</el-button>
+              </div>
+              <div class="rule-guide-list">
+                <p v-for="(item, index) in selectedTeacherRule.usage" :key="`guide-${selectedTeacherRule.id}-${index}`">
+                  <span>{{ index + 1 }}</span>{{ item }}
+                </p>
               </div>
             </el-card>
           </div>
-
-          <el-card shadow="never" class="rule-guide-card">
-            <h3>{{ selectedTeacherRule.title }}</h3>
-            <p class="rule-guide-desc">{{ selectedTeacherRule.desc }}</p>
-            <div class="rule-guide-list">
-              <p v-for="(item, index) in selectedTeacherRule.usage" :key="`guide-${selectedTeacherRule.id}-${index}`">
-                {{ index + 1 }}. {{ item }}
-              </p>
-            </div>
-          </el-card>
         </section>
       </template>
 
@@ -3552,7 +3764,7 @@ watch(
         <header class="rule-head">
           <div>
             <h1>规则权重分配</h1>
-            <p>规则介绍：通过硬约束优先级与软约束权重，定义智能排课时的约束检查顺序和优化目标。</p>
+            <p>规则介绍：硬约束必须全部满足；评分权重用于决定可行课表之间的优化侧重点。</p>
           </div>
           <div class="rule-head-actions">
             <el-button size="small" @click="resetRuleWeightConfig">恢复默认</el-button>
@@ -3577,7 +3789,7 @@ watch(
               <el-switch v-model="ruleWeightConfig.enabled" />
             </div>
             <div class="rule-weight-switch-item">
-              <span class="label">自动归一化(100)</span>
+              <span class="label">评分权重归一化(100)</span>
               <el-switch v-model="ruleWeightConfig.autoNormalize" :disabled="!ruleWeightConfig.enabled" />
             </div>
           </div>
@@ -3587,7 +3799,7 @@ watch(
               <el-card shadow="never" class="rule-weight-card">
                 <template #header>
                   <div class="rule-weight-card-head hard">
-                    <span>硬约束优先级（先检查）</span>
+                    <span>硬约束分组（全部必须满足）</span>
                     <el-tag type="danger" effect="light" size="small">必须满足</el-tag>
                   </div>
                 </template>
@@ -3603,38 +3815,13 @@ watch(
                         <div class="rule-weight-hard-item-title">{{ item.label }}</div>
                         <div class="rule-weight-hard-item-desc">{{ item.desc }}</div>
                         <div class="rule-weight-hard-item-actions">
-                          <el-button
-                            text
-                            size="small"
-                            :disabled="!ruleWeightConfig.enabled || item.level <= 1"
-                            @click="moveHardRuleLevel(item.key, -1)"
-                          >
-                            &lt;
-                          </el-button>
+                          <el-tag v-if="hardRuleLocked(item.key)" type="info" effect="plain" size="small">系统必选</el-tag>
+                          <span v-else class="rule-weight-hard-state">{{ item.enabled ? '已启用' : '已停用' }}</span>
                           <el-switch
                             :model-value="item.enabled"
-                            :disabled="!ruleWeightConfig.enabled"
+                            :disabled="!ruleWeightConfig.enabled || hardRuleLocked(item.key)"
                             @update:model-value="setHardRuleEnabled(item.key, Boolean($event))"
                           />
-                          <el-button
-                            text
-                            size="small"
-                            :disabled="!ruleWeightConfig.enabled || item.level >= 4"
-                            @click="moveHardRuleLevel(item.key, 1)"
-                          >
-                            &gt;
-                          </el-button>
-                        </div>
-                        <div class="rule-weight-hard-item-extra">
-                          <el-button
-                            link
-                            type="primary"
-                            size="small"
-                            :disabled="!ruleWeightConfig.enabled"
-                            @click="setRuleMode(item.key, 'soft')"
-                          >
-                            设为软约束
-                          </el-button>
                         </div>
                       </div>
                     </div>
@@ -3646,7 +3833,7 @@ watch(
             <el-col :xs="24" :lg="12">
               <el-card shadow="never" class="rule-weight-card">
                 <template #header>
-                  <div class="rule-weight-card-head">软约束权重（评分项）</div>
+                  <div class="rule-weight-card-head">优化目标权重（总计 100）</div>
                 </template>
                 <el-table :data="softRuleRows" border class="admin-element-table">
                   <el-table-column prop="label" label="规则" min-width="120" />
@@ -3673,16 +3860,23 @@ watch(
                       />
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="120" align="center">
+                </el-table>
+                <div class="rule-weight-feature-head">
+                  <strong>规则功能开关</strong>
+                  <span>控制规则是否参与建模，不计入 100 分。</span>
+                </div>
+                <el-table :data="featureRuleRows" border class="admin-element-table rule-weight-feature-table">
+                  <el-table-column prop="label" label="规则" min-width="120" />
+                  <el-table-column prop="desc" label="说明" min-width="240" />
+                  <el-table-column label="状态" width="110" align="center">
                     <template #default="{ row }">
-                      <el-button
-                        link
-                        type="primary"
+                      <el-tag v-if="!row.available" type="info" effect="plain">暂未接入</el-tag>
+                      <el-switch
+                        v-else
+                        :model-value="row.enabled"
                         :disabled="!ruleWeightConfig.enabled"
-                        @click="setRuleMode(row.key, 'hard')"
-                      >
-                        设为硬约束
-                      </el-button>
+                        @update:model-value="setFeatureRuleEnabled(row.key, Boolean($event))"
+                      />
                     </template>
                   </el-table-column>
                 </el-table>
@@ -3691,18 +3885,18 @@ watch(
           </el-row>
 
           <div class="rule-weight-summary">
-            <el-tag type="info" effect="plain">已启用软规则：{{ enabledSoftRuleCount }} 项</el-tag>
+            <el-tag type="info" effect="plain">已启用评分目标：{{ enabledSoftRuleCount }} 项</el-tag>
             <el-tag
               :type="enabledSoftWeightTotal === 100 ? 'success' : 'warning'"
               effect="light"
             >
-              当前软约束总权重：{{ enabledSoftWeightTotal }}
+              当前评分总权重：{{ enabledSoftWeightTotal }}
             </el-tag>
             <span class="rule-weight-tip">
               {{
                 ruleWeightConfig.autoNormalize
-                  ? '保存时会自动归一化到 100。'
-                  : '当前为手动权重模式，建议总权重保持 100。'
+                  ? '保存时仅对三个评分目标归一化到 100。'
+                  : '当前为手动权重模式，三个评分目标建议合计 100。'
               }}
             </span>
           </div>
@@ -3790,55 +3984,72 @@ watch(
       <template v-else-if="activeStep === 'course-slot' && courseSlotMode === 'ban'">
         <header class="rule-head">
           <div>
-            <h1>课程时段设置</h1>
-            <p>当前状态：不排课。排课引擎不会将课程安排在标记的节次。</p>
+            <div class="course-slot-title-row">
+              <h1>课程时段设置</h1>
+              <el-radio-group v-model="courseSlotMode" class="course-slot-mode is-ban-mode">
+                <el-radio-button value="area">允许排课</el-radio-button>
+                <el-radio-button value="ban">禁止排课</el-radio-button>
+              </el-radio-group>
+            </div>
+            <p>当前状态：禁止排课。排课引擎不会将课程安排在标记的节次。</p>
           </div>
           <div class="rule-head-actions">
-            <el-radio-group v-model="courseSlotMode" class="course-slot-mode">
-              <el-radio-button label="area">排课区域</el-radio-button>
-              <el-radio-button label="ban">不排课</el-radio-button>
-            </el-radio-group>
             <el-button size="small" @click="clearCurrentBanRule">清空</el-button>
             <el-button type="primary" size="small" @click="saveCurrentBanRule">保存</el-button>
           </div>
         </header>
 
         <section class="rule-section course-ban-page">
-          <div class="consecutive-topbar">
-            <el-select v-model="selectedConsecutiveType" class="rule-select-sm">
-              <el-option v-for="item in consecutiveTypeOptions" :key="`ban-type-${item}`" :label="item" :value="item" />
-            </el-select>
-            <el-radio-group v-model="activeBanSubject" class="subject-tabs">
-              <el-radio-button
-                v-for="subject in banSubjectOptions"
-                :key="`ban-subject-${subject}`"
-                :label="subject"
-                :class="{ configured: subjectHasBan(subject) }"
+          <div class="course-slot-filter-row">
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">校区</span>
+              <el-select v-model="selectedBanCampus" class="rule-filter-select" placeholder="选择校区">
+                <el-option v-for="item in banCampusOptions" :key="`ban-campus-${item}`" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">年级</span>
+              <el-select v-model="selectedBanGrade" class="rule-filter-select" placeholder="选择年级">
+                <el-option v-for="item in banGradeOptions" :key="`ban-grade-${item}`" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">班级</span>
+              <el-select v-model="selectedBanClassFilter" class="rule-filter-select" placeholder="选择班级">
+                <el-option label="全部班级" value="全部班级" />
+                <el-option v-for="item in banClassRanges" :key="`ban-filter-${item.id}`" :label="item.label" :value="item.id" />
+              </el-select>
+            </label>
+            <label class="course-slot-course-filter">
+              <span class="consecutive-field-label">课程</span>
+              <el-select
+                v-model="activeBanSubject"
+                filterable
+                placeholder="输入课程名称搜索"
               >
-                {{ subject }}
-                <span v-if="subjectHasBan(subject)" class="configured-dot" title="已设置禁排"></span>
-              </el-radio-button>
-            </el-radio-group>
+                <el-option
+                  v-for="subject in banSubjectOptions"
+                  :key="`ban-subject-${subject}`"
+                  :label="subject"
+                  :value="subject"
+                >
+                  <span>{{ subject }}</span>
+                  <span v-if="subjectHasBan(subject)" class="configured-dot" title="已设置禁排"></span>
+                </el-option>
+              </el-select>
+            </label>
+            <el-button
+              v-if="selectedBanClassFilter === '全部班级'"
+              link
+              type="primary"
+              class="course-slot-apply-all"
+              :disabled="!selectedBanTemplateClass"
+              @click="applyBanRuleToAllClasses"
+            >
+              同步所有班级
+            </el-button>
           </div>
 
-          <div class="course-ban-meta">
-            <div class="meta-item">
-              <div class="meta-label">校区</div>
-              <div class="meta-value">
-                <el-select v-model="selectedBanCampus" class="rule-filter-select" placeholder="选择校区">
-                  <el-option v-for="item in banCampusOptions" :key="`ban-campus-${item}`" :label="item" :value="item" />
-                </el-select>
-              </div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label">年级</div>
-              <div class="meta-value">
-                <el-select v-model="selectedBanGrade" class="rule-filter-select" placeholder="选择年级">
-                  <el-option v-for="item in banGradeOptions" :key="`ban-grade-${item}`" :label="item" :value="item" />
-                </el-select>
-              </div>
-            </div>
-          </div>
           <p class="course-area-meta-tip">当前读取基础数据：每周上课 {{ banDaysCount }} 天，日排课节次 {{ banLessonCount }} 节。</p>
 
           <div class="course-ban-wrap">
@@ -3862,90 +4073,113 @@ watch(
                       type="button"
                       :class="['course-ban-cell', { active: classBanCellEnabled(classItem.className, period, day) }]"
                       @click="toggleClassBanCell(classItem.className, period, day)"
-                    >
-                      <span v-if="classBanCellEnabled(classItem.className, period, day)">禁</span>
-                    </button>
+                    ></button>
                   </template>
                 </div>
               </div>
             </div>
             <div v-else class="course-area-empty">当前校区和年级下暂无班级数据。</div>
 
-            <div class="course-area-range-tabs">
-              <el-checkbox
-                class="course-area-check-all"
-                :model-value="banCheckAll"
-                :indeterminate="banIndeterminate"
-                border
-                @change="onBanCheckAllChange($event as boolean)"
-              >
-                全部班级
-              </el-checkbox>
-              <el-checkbox-group v-model="selectedBanClassRanges" class="course-area-range-checks">
-                <el-checkbox
-                  v-for="item in banClassRanges"
-                  :key="`ban-range-${item.id}`"
-                  :value="item.id"
-                  border
-                >
-                  {{ item.label }}
-                </el-checkbox>
-              </el-checkbox-group>
-            </div>
           </div>
+
+          <section class="course-slot-management-section">
+            <div class="course-slot-management-heading">
+              <h3>禁止排课规则</h3>
+              <p>当前筛选下共 {{ configuredCourseBanRows.length }} 条规则，包含 {{ configuredCourseBanSlotTotal }} 个禁排节次。</p>
+            </div>
+            <el-table
+              :data="configuredCourseBanRows"
+              border
+              size="small"
+              class="admin-element-table course-slot-management-table"
+              empty-text="当前筛选下暂无禁止排课设置"
+            >
+              <el-table-column prop="campus" label="校区" min-width="120" />
+              <el-table-column prop="grade" label="年级" min-width="100" />
+              <el-table-column prop="className" label="班级" min-width="100" />
+              <el-table-column prop="subject" label="课程" min-width="140" />
+              <el-table-column label="禁排节次" min-width="320" show-overflow-tooltip>
+                <template #default="{ row }">{{ formatCourseSlots(row.bannedSlots) }}</template>
+              </el-table-column>
+              <el-table-column label="节次数" width="100" align="center">
+                <template #default="{ row }">{{ row.bannedSlots.length }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="100" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="danger" @click="deleteCourseBanRule(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </section>
       </template>
 
       <template v-else-if="activeStep === 'course-slot' && courseSlotMode === 'area'">
         <header class="rule-head">
           <div>
-            <h1>课程时段设置</h1>
-            <p>当前状态：排课区域。勾选的节次是该课程允许排课的范围。</p>
+            <div class="course-slot-title-row">
+              <h1>课程时段设置</h1>
+              <el-radio-group v-model="courseSlotMode" class="course-slot-mode">
+                <el-radio-button value="area">允许排课</el-radio-button>
+                <el-radio-button value="ban">禁止排课</el-radio-button>
+              </el-radio-group>
+            </div>
+            <p>当前状态：允许排课。勾选的节次是该课程允许排课的范围。</p>
           </div>
           <div class="rule-head-actions">
-            <el-radio-group v-model="courseSlotMode" class="course-slot-mode">
-              <el-radio-button label="area">排课区域</el-radio-button>
-              <el-radio-button label="ban">不排课</el-radio-button>
-            </el-radio-group>
             <el-button size="small" @click="clearCurrentAreaRule">清空</el-button>
             <el-button type="primary" size="small" @click="saveCurrentAreaRule">保存</el-button>
           </div>
         </header>
 
         <section class="rule-section course-area-page">
-          <div class="consecutive-topbar">
-            <el-select v-model="selectedConsecutiveType" class="rule-select-sm">
-              <el-option v-for="item in consecutiveTypeOptions" :key="item" :label="item" :value="item" />
-            </el-select>
-            <el-radio-group v-model="activeAreaSubject" class="subject-tabs">
-              <el-radio-button
-                v-for="subject in areaSubjectOptions"
-                :key="`a-${subject}`"
-                :label="subject"
+          <div class="course-slot-filter-row">
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">校区</span>
+              <el-select v-model="selectedAreaCampus" class="rule-filter-select" placeholder="选择校区">
+                <el-option v-for="item in areaCampusOptions" :key="item" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">年级</span>
+              <el-select v-model="selectedAreaGrade" class="rule-filter-select" placeholder="选择年级">
+                <el-option v-for="item in areaGradeOptions" :key="item" :label="item" :value="item" />
+              </el-select>
+            </label>
+            <label class="course-slot-filter-item">
+              <span class="consecutive-field-label">班级</span>
+              <el-select v-model="selectedAreaClassFilter" class="rule-filter-select" placeholder="选择班级">
+                <el-option label="全部班级" value="全部班级" />
+                <el-option v-for="item in areaClassRanges" :key="`area-filter-${item.id}`" :label="item.label" :value="item.id" />
+              </el-select>
+            </label>
+            <label class="course-slot-course-filter">
+              <span class="consecutive-field-label">课程</span>
+              <el-select
+                v-model="activeAreaSubject"
+                filterable
+                placeholder="输入课程名称搜索"
               >
-                {{ subject }}
-              </el-radio-button>
-            </el-radio-group>
+                <el-option
+                  v-for="subject in areaSubjectOptions"
+                  :key="`a-${subject}`"
+                  :label="subject"
+                  :value="subject"
+                />
+              </el-select>
+            </label>
+            <el-button
+              v-if="selectedAreaClassFilter === '全部班级'"
+              link
+              type="primary"
+              class="course-slot-apply-all"
+              :disabled="!selectedAreaTemplateClass"
+              @click="applyAreaRuleToAllClasses"
+            >
+              同步所有班级
+            </el-button>
           </div>
 
-          <div class="course-area-meta">
-            <div class="meta-item">
-              <div class="meta-label">校区</div>
-              <div class="meta-value">
-                <el-select v-model="selectedAreaCampus" class="rule-filter-select" placeholder="选择校区">
-                  <el-option v-for="item in areaCampusOptions" :key="item" :label="item" :value="item" />
-                </el-select>
-              </div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label">年级</div>
-              <div class="meta-value">
-                <el-select v-model="selectedAreaGrade" class="rule-filter-select" placeholder="选择年级">
-                  <el-option v-for="item in areaGradeOptions" :key="item" :label="item" :value="item" />
-                </el-select>
-              </div>
-            </div>
-          </div>
           <p class="course-area-meta-tip">当前读取基础数据：每周上课 {{ areaDaysCount }} 天，日排课节次 {{ areaLessonCount }} 节。</p>
 
           <div class="course-area-wrap">
@@ -3982,31 +4216,37 @@ watch(
             </div>
             <div v-else class="course-area-empty">当前校区和年级下暂无班级数据。</div>
 
-            <div class="course-area-range-tabs">
-              <el-checkbox
-                class="course-area-check-all"
-                :model-value="areaCheckAll"
-                :indeterminate="areaIndeterminate"
-                border
-                @change="onAreaCheckAllChange($event as boolean)"
-              >
-                全部班级
-              </el-checkbox>
-              <el-checkbox-group
-                v-model="selectedAreaClassRanges"
-                class="course-area-range-checks"
-              >
-                <el-checkbox
-                  v-for="item in areaClassRanges"
-                  :key="item.id"
-                  :label="item.id"
-                  border
-                >
-                  {{ item.label }}
-                </el-checkbox>
-              </el-checkbox-group>
-            </div>
           </div>
+
+          <section class="course-slot-management-section">
+            <div class="course-slot-management-heading">
+              <h3>允许排课规则</h3>
+              <p>当前筛选下共 {{ configuredCourseAreaRows.length }} 条规则，包含 {{ configuredCourseAreaSlotTotal }} 个允许节次。</p>
+            </div>
+            <el-table
+              :data="configuredCourseAreaRows"
+              border
+              size="small"
+              class="admin-element-table course-slot-management-table"
+              empty-text="当前筛选下暂无允许排课设置"
+            >
+              <el-table-column prop="campus" label="校区" min-width="120" />
+              <el-table-column prop="grade" label="年级" min-width="100" />
+              <el-table-column prop="className" label="班级" min-width="100" />
+              <el-table-column prop="subject" label="课程" min-width="140" />
+              <el-table-column label="允许节次" min-width="320" show-overflow-tooltip>
+                <template #default="{ row }">{{ formatCourseSlots(row.allowedSlots) }}</template>
+              </el-table-column>
+              <el-table-column label="节次数" width="100" align="center">
+                <template #default="{ row }">{{ row.allowedSlots.length }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="100" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="danger" @click="deleteCourseAreaRule(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </section>
       </template>
 
@@ -4123,147 +4363,118 @@ watch(
         </header>
 
         <section class="rule-section consecutive-page">
-          <div class="consecutive-topbar">
-            <el-select v-model="selectedConsecutiveType" class="rule-select-sm">
-              <el-option v-for="item in consecutiveTypeOptions" :key="item" :label="item" :value="item" />
-            </el-select>
-            <el-radio-group v-model="activeConsecutiveSubject" class="subject-tabs">
-              <el-radio-button
-                v-for="subject in consecutiveSubjectOptions"
-                :key="`c-${subject}`"
-                :label="subject"
-              >
-                {{ subject }}
-              </el-radio-button>
-            </el-radio-group>
-          </div>
-
-          <div class="consecutive-config-panel">
-            <div class="consecutive-meta">
-              <div class="consecutive-meta-grid">
-                <div class="meta-item">
-                  <div class="meta-label">校区</div>
-                  <div class="meta-value">
-                    <el-select v-model="selectedConsecutiveCampus" class="rule-filter-select" placeholder="选择校区">
-                      <el-option v-for="item in consecutiveCampusOptions" :key="item" :label="item" :value="item" />
-                    </el-select>
-                  </div>
-                </div>
-                <div class="meta-item">
-                  <div class="meta-label">年级</div>
-                  <div class="meta-value">
-                    <el-select v-model="selectedConsecutiveGrade" class="rule-filter-select" placeholder="选择年级">
-                      <el-option v-for="item in consecutiveGradeOptions" :key="item" :label="item" :value="item" />
-                    </el-select>
-                  </div>
-                </div>
-                <div class="meta-item">
-                  <div class="meta-label">班级</div>
-                  <div class="meta-value">
-                    全部班级（默认生效）
-                    <el-button link type="primary" @click="openConsecutiveClassDialog()">按班级特殊设置</el-button>
-                  </div>
-                </div>
+          <section class="consecutive-layout-section consecutive-scope-section">
+            <div class="consecutive-section-heading">
+              <div>
+                <h3>适用范围</h3>
+                <p>选择课程及规则生效的校区、年级和班级，班级默认为全部班级。</p>
               </div>
             </div>
-
-            <div class="consecutive-setting">
-              <div class="consecutive-setting-head">
-                <h3>连堂课次数</h3>
-                <h3>优先连堂日</h3>
-                <div class="consecutive-setting-actions">
-                  <el-button text @click="clearCurrentConsecutiveSetting">清空</el-button>
-                  <el-button text type="primary" @click="saveCurrentConsecutiveSetting">保存</el-button>
-                </div>
-              </div>
-              <p class="consecutive-setting-tip">设置每周连堂课次数（0-5），并选择希望优先安排连堂课的星期几。</p>
-              <div class="consecutive-setting-grid">
-                <div class="consecutive-setting-column">
-                  <div class="consecutive-setting-label">每周连堂次数</div>
-                  <el-input-number
-                    class="consecutive-input"
-                    v-model="consecutiveDefaultWeeklyCount"
-                    :min="0"
-                    :max="5"
-                    controls-position="right"
-                  />
-                </div>
-
-                <div class="consecutive-setting-column">
-                  <div class="consecutive-setting-label">希望安排到以下日期</div>
-                  <el-checkbox-group v-model="consecutiveDefaultPreferredDays" class="consecutive-day-checks">
-                    <el-checkbox v-for="day in consecutiveWeekdays" :key="day" :value="day" :label="day">
-                      {{ day }}
-                    </el-checkbox>
-                  </el-checkbox-group>
-                </div>
-              </div>
-
-              <div class="consecutive-override-table-wrap">
-                <div class="consecutive-override-title">班级特殊设置</div>
-                <el-table
-                  :data="currentConsecutiveOverrides"
-                  border
-                  size="small"
-                  class="admin-element-table"
-                  empty-text="暂无班级特殊设置"
-                >
-                  <el-table-column prop="className" label="班级" min-width="120" />
-                  <el-table-column label="连堂课次数" width="120" align="center">
-                    <template #default="{ row }">{{ row.weeklyConsecutiveCount ?? '--' }}</template>
-                  </el-table-column>
-                  <el-table-column label="优先连堂日" min-width="220">
-                    <template #default="{ row }">
-                      {{ (row.preferredDays || []).length ? row.preferredDays.join('、') : '--' }}
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="140" align="center">
-                    <template #default="{ row }">
-                      <el-button link type="primary" @click="openConsecutiveClassDialog(row.className)">编辑</el-button>
-                      <el-button link type="danger" @click="removeConsecutiveClassOverride(row.className)">删除</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-            </div>
-          </div>
-
-          <el-dialog
-            v-model="consecutiveClassDialogVisible"
-            title="班级特殊设置"
-            width="560px"
-          >
-            <el-form label-position="top">
-              <el-form-item label="班级">
-                <el-select v-model="consecutiveClassForm.className" placeholder="选择班级">
+            <div class="consecutive-scope-grid">
+              <label class="consecutive-field">
+                <span class="consecutive-field-label">校区</span>
+                <el-select v-model="selectedConsecutiveCampus" class="rule-filter-select" placeholder="选择校区">
+                  <el-option v-for="item in consecutiveCampusOptions" :key="item" :label="item" :value="item" />
+                </el-select>
+              </label>
+              <label class="consecutive-field">
+                <span class="consecutive-field-label">年级</span>
+                <el-select v-model="selectedConsecutiveGrade" class="rule-filter-select" placeholder="选择年级">
+                  <el-option v-for="item in consecutiveGradeOptions" :key="item" :label="item" :value="item" />
+                </el-select>
+              </label>
+              <label class="consecutive-field">
+                <span class="consecutive-field-label">班级</span>
+                <el-select v-model="selectedConsecutiveClass" class="rule-filter-select" placeholder="选择班级">
                   <el-option v-for="item in consecutiveClassOptions" :key="item" :label="item" :value="item" />
                 </el-select>
-              </el-form-item>
-              <el-form-item label="连堂课次数（0-5）">
+              </label>
+              <label class="consecutive-field">
+                <span class="consecutive-field-label">课程</span>
+                <el-select
+                  v-model="activeConsecutiveSubject"
+                  class="rule-filter-select"
+                  filterable
+                  placeholder="输入课程名称搜索"
+                >
+                  <el-option
+                    v-for="subject in consecutiveSubjectOptions"
+                    :key="`c-${subject}`"
+                    :label="subject"
+                    :value="subject"
+                  />
+                </el-select>
+              </label>
+            </div>
+          </section>
+
+          <section class="consecutive-layout-section consecutive-default-section">
+            <div class="consecutive-section-heading consecutive-section-heading--actions">
+              <div>
+                <h3>{{ selectedConsecutiveClass === '全部班级' ? '默认连堂设置' : `${selectedConsecutiveClass}连堂设置` }}</h3>
+                <p>设置每周连堂课次数（0-5），并选择希望优先安排连堂课的星期。</p>
+              </div>
+              <div class="consecutive-setting-actions">
+                <el-button @click="clearCurrentConsecutiveSetting">清空</el-button>
+                <el-button type="primary" @click="saveCurrentConsecutiveSetting">保存</el-button>
+              </div>
+            </div>
+            <div class="consecutive-setting-grid">
+              <div class="consecutive-setting-column">
+                <div class="consecutive-setting-label">每周连堂次数</div>
                 <el-input-number
                   class="consecutive-input"
-                  v-model="consecutiveClassForm.weeklyConsecutiveCount"
+                  v-model="consecutiveDefaultWeeklyCount"
                   :min="0"
                   :max="5"
                   controls-position="right"
                 />
-              </el-form-item>
-              <el-form-item label="优先连堂日">
-                <el-checkbox-group v-model="consecutiveClassForm.preferredDays" class="consecutive-day-checks">
-                  <el-checkbox v-for="day in consecutiveWeekdays" :key="`dlg-${day}`" :value="day" :label="day">
+              </div>
+
+              <div class="consecutive-setting-column consecutive-setting-column--days">
+                <div class="consecutive-setting-label">优先连堂日</div>
+                <el-checkbox-group v-model="consecutiveDefaultPreferredDays" class="consecutive-day-checks">
+                  <el-checkbox v-for="day in consecutiveWeekdays" :key="day" :value="day" :label="day">
                     {{ day }}
                   </el-checkbox>
                 </el-checkbox-group>
-              </el-form-item>
-            </el-form>
-            <p v-if="consecutiveClassDialogError" class="error">{{ consecutiveClassDialogError }}</p>
-            <template #footer>
-              <div class="dialog-actions">
-                <el-button @click="consecutiveClassDialogVisible = false">取消</el-button>
-                <el-button type="primary" @click="saveConsecutiveClassOverride">保存</el-button>
               </div>
-            </template>
-          </el-dialog>
+            </div>
+          </section>
+
+          <section class="consecutive-layout-section consecutive-management-section">
+            <div class="consecutive-section-heading">
+              <h3>连堂课管理</h3>
+              <p>
+                已配置 {{ configuredConsecutiveRows.length }} 条规则，合计每周 {{ configuredConsecutiveWeeklyTotal }} 次连堂课。
+              </p>
+            </div>
+            <el-table
+              :data="configuredConsecutiveRows"
+              border
+              size="small"
+              class="admin-element-table consecutive-management-table"
+              empty-text="暂无连堂课设置"
+            >
+              <el-table-column prop="campus" label="校区" min-width="120" />
+              <el-table-column prop="grade" label="年级" min-width="100" />
+              <el-table-column prop="className" label="班级范围" min-width="120" />
+              <el-table-column prop="subject" label="课程" min-width="120" />
+              <el-table-column label="每周连堂次数" width="140" align="center">
+                <template #default="{ row }">{{ row.weeklyConsecutiveCount ?? '--' }}</template>
+              </el-table-column>
+              <el-table-column label="优先连堂日" min-width="200">
+                <template #default="{ row }">
+                  {{ row.preferredDays.length ? row.preferredDays.join('、') : '--' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="100" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="danger" @click="removeConfiguredConsecutiveRule(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </section>
       </template>
 
@@ -4293,9 +4504,6 @@ watch(
             <el-select v-model="selectedOddEvenCourse" class="rule-filter-select">
               <el-option v-for="item in oddEvenCourseOptions" :key="item" :label="item" :value="item" />
             </el-select>
-            <el-select v-model="selectedOddEvenScope" class="rule-filter-select">
-              <el-option v-for="item in oddEvenScopeOptions" :key="item" :label="item" :value="item" />
-            </el-select>
           </div>
 
           <div class="fixed-table-wrap">
@@ -4305,7 +4513,6 @@ watch(
                   <th>校区</th>
                   <th>年级</th>
                   <th>班级</th>
-                  <th>范围</th>
                   <th>单周课程</th>
                   <th>双周课程</th>
                   <th>操作</th>
@@ -4313,13 +4520,12 @@ watch(
               </thead>
               <tbody>
                 <tr v-if="filteredOddEvenRules.length === 0">
-                  <td colspan="7">暂无单双周规则</td>
+                  <td colspan="6">暂无单双周规则</td>
                 </tr>
                 <tr v-for="rule in filteredOddEvenRules" :key="rule.id">
                   <td>{{ rule.campus }}</td>
                   <td>{{ rule.grade }}</td>
                   <td>{{ rule.classNames.join('、') }}</td>
-                  <td>{{ rule.scope }}</td>
                   <td>{{ rule.oddCourse }}</td>
                   <td>{{ rule.evenCourse }}</td>
                   <td class="op-cell-inline">
@@ -4345,11 +4551,6 @@ watch(
               <el-form-item label="年级">
                 <el-select v-model="oddEvenForm.grade" placeholder="选择年级">
                   <el-option v-for="item in oddEvenDialogGradeOptions" :key="item" :label="item" :value="item" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="范围">
-                <el-select v-model="oddEvenForm.scope" placeholder="选择范围">
-                  <el-option v-for="item in oddEvenScopeOptions.filter((v) => v !== '全部范围')" :key="item" :label="item" :value="item" />
                 </el-select>
               </el-form-item>
               <el-form-item label="班级">
@@ -4395,7 +4596,15 @@ watch(
             </p>
           </div>
           <div class="rule-head-actions">
-            <el-button size="small" @click="clearCombineRules">清空</el-button>
+            <el-button
+              type="danger"
+              plain
+              size="small"
+              :disabled="selectedCombineRuleIds.length === 0"
+              @click="deleteSelectedCombineRules"
+            >
+              批量删除（{{ selectedCombineRuleIds.length }}）
+            </el-button>
             <el-button type="primary" size="small" @click="addCombineRule">添加</el-button>
           </div>
         </header>
@@ -4414,21 +4623,25 @@ watch(
             <el-select v-model="selectedCombineCourse" class="rule-filter-select">
               <el-option v-for="item in combineCourseOptions" :key="item" :label="item" :value="item" />
             </el-select>
-            <el-select v-model="selectedCombineScope" class="rule-filter-select">
-              <el-option v-for="item in combineScopeOptions" :key="item" :label="item" :value="item" />
-            </el-select>
           </div>
 
           <div class="fixed-table-wrap">
             <table class="fixed-table combine-table">
               <thead>
                 <tr>
+                  <th style="width: 52px">
+                    <el-checkbox
+                      :model-value="allFilteredCombineRulesSelected"
+                      :indeterminate="someFilteredCombineRulesSelected"
+                      aria-label="全选当前合班课规则"
+                      @change="toggleAllFilteredCombineRules(Boolean($event))"
+                    />
+                  </th>
                   <th>序号</th>
                   <th>校区</th>
                   <th>年级</th>
                   <th>班级</th>
                   <th>课程</th>
-                  <th>合班范围</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -4437,12 +4650,18 @@ watch(
                   <td colspan="7">暂无合班课规则</td>
                 </tr>
                 <tr v-for="rule in filteredCombineRules" :key="rule.id">
+                  <td>
+                    <el-checkbox
+                      :model-value="selectedCombineRuleIdSet.has(rule.id)"
+                      :aria-label="`选择合班课规则 ${rule.orderNo}`"
+                      @change="toggleCombineRuleSelection(rule.id, Boolean($event))"
+                    />
+                  </td>
                   <td>{{ rule.orderNo }}</td>
                   <td>{{ rule.campus }}</td>
                   <td>{{ rule.grade }}</td>
                   <td>{{ rule.classNames.join('、') }}</td>
                   <td>{{ rule.course }}</td>
-                  <td>{{ rule.scope }}</td>
                   <td class="op-cell-inline">
                     <el-button link type="primary" @click="openEditCombineDialog(rule)">编辑</el-button>
                     <el-button link type="danger" @click="deleteCombineRule(rule.id)">删除</el-button>
@@ -4483,11 +4702,6 @@ watch(
               <el-form-item label="课程">
                 <el-select v-model="combineForm.course" filterable placeholder="选择课程">
                   <el-option v-for="item in combineDialogCourseOptions" :key="`combine-course-${item}`" :label="item" :value="item" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="范围">
-                <el-select v-model="combineForm.scope" placeholder="选择范围">
-                  <el-option v-for="item in combineDialogScopeOptions" :key="`combine-scope-${item}`" :label="item" :value="item" />
                 </el-select>
               </el-form-item>
             </el-form>
@@ -4804,16 +5018,6 @@ watch(
         </section>
       </template>
 
-      <template v-else>
-        <header class="rule-head">
-          <h1>{{ activeStepLabel }}</h1>
-          <p>该规则页正在开发中，后续继续完善。</p>
-        </header>
-
-        <section class="rule-section">
-          <p class="coming-soon">当前先完成全局固定点，其他规则稍后补齐。</p>
-        </section>
-      </template>
     </section>
   </article>
 </template>

@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { loadSchedulePlans, saveSchedulePlans, type PlanMode, type SchedulePlan } from '../../services/scheduleStateRepository'
+import {
+  deleteWorkbenchPlanState,
+  duplicateWorkbenchPlanState,
+  loadSchedulePlans,
+  saveSchedulePlans,
+  type PlanMode,
+  type SchedulePlan
+} from '../../services/scheduleStateRepository'
 import {
   basicDataRepository,
   type BasicDataSnapshot,
@@ -14,6 +21,8 @@ const router = useRouter()
 
 const plans = ref<SchedulePlan[]>([])
 const plansReady = ref(false)
+const animatedProgress = ref<Record<string, number>>({})
+let progressAnimationFrame = 0
 const showDialog = ref(false)
 const dialogType = ref<'create' | 'rename'>('create')
 const editingId = ref('')
@@ -28,6 +37,7 @@ const classHourClassRows = ref<ClassHourClassRow[]>([])
 const basicDataSnapshot = ref<Partial<BasicDataSnapshot> | null>(null)
 
 const modeOptions: PlanMode[] = ['行政班排课']
+const sortedPlans = computed(() => [...plans.value].sort((a, b) => Number(b.favorite) - Number(a.favorite)))
 
 function uid(): string {
   return `${Date.now()}-${Math.floor(Math.random() * 100000)}`
@@ -42,6 +52,36 @@ function isLegacyMockPlanSet(input: SchedulePlan[]): boolean {
 function normalizeMode(input: unknown): PlanMode {
   if (input === '行政班排课') return '行政班排课'
   return '行政班排课'
+}
+
+function normalizedProgress(value: unknown): number {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)))
+}
+
+function displayedProgress(plan: SchedulePlan): number {
+  return animatedProgress.value[plan.id] ?? normalizedProgress(plan.progress)
+}
+
+function startProgressAnimation(): void {
+  if (progressAnimationFrame) cancelAnimationFrame(progressAnimationFrame)
+  const targets = Object.fromEntries(plans.value.map((plan) => [plan.id, normalizedProgress(plan.progress)]))
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    animatedProgress.value = targets
+    return
+  }
+  animatedProgress.value = Object.fromEntries(Object.keys(targets).map((id) => [id, 0]))
+  const startedAt = performance.now()
+  const duration = 850
+  const tick = (now: number) => {
+    const ratio = Math.min(1, (now - startedAt) / duration)
+    const eased = 1 - Math.pow(1 - ratio, 3)
+    animatedProgress.value = Object.fromEntries(
+      Object.entries(targets).map(([id, target]) => [id, Math.round(target * eased)])
+    )
+    if (ratio < 1) progressAnimationFrame = requestAnimationFrame(tick)
+    else progressAnimationFrame = 0
+  }
+  progressAnimationFrame = requestAnimationFrame(tick)
 }
 
 async function loadPlans(): Promise<void> {
@@ -82,7 +122,12 @@ onMounted(() => {
       ? ((payload as { classHourClassRows: ClassHourClassRow[] }).classHourClassRows || [])
       : []
     plansReady.value = true
+    startProgressAnimation()
   })
+})
+
+onBeforeUnmount(() => {
+  if (progressAnimationFrame) cancelAnimationFrame(progressAnimationFrame)
 })
 
 type RequiredCheckItem = {
@@ -220,33 +265,42 @@ function toggleFavorite(id: string): void {
   )
 }
 
-function duplicatePlan(id: string): void {
+async function duplicatePlan(id: string): Promise<void> {
   const target = plans.value.find((plan) => plan.id === id)
   if (!target) return
 
+  const newPlanId = uid()
+  const copiedScheduleResult = await duplicateWorkbenchPlanState(target.id, newPlanId)
   plans.value.unshift({
     ...target,
-    id: uid(),
+    id: newPlanId,
     name: `${target.name}副本`,
     favorite: false,
-    progress: 0
+    progress: target.progress
   })
+  ElMessage.success(copiedScheduleResult ? '已复制方案及排课内容，副本尚未发布。' : '已复制方案；原方案暂无排课结果。')
 }
 
 async function deletePlan(id: string): Promise<void> {
   const target = plans.value.find((plan) => plan.id === id)
   const displayName = target?.name ?? '该方案'
   try {
-    await ElMessageBox.confirm(`确认删除排课方案「${displayName}」吗？`, '删除确认', {
-      type: 'warning',
-      confirmButtonText: '确认删除',
-      cancelButtonText: '取消',
-      confirmButtonClass: 'el-button--danger'
-    })
+    await ElMessageBox.confirm(
+      `确认删除排课方案「${displayName}」吗？该方案的排课内容及已发布课表数据将一并删除，且无法恢复。`,
+      '删除排课方案',
+      {
+        type: 'warning',
+        confirmButtonText: '删除方案及课表',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
   } catch {
     return
   }
+  await deleteWorkbenchPlanState(id)
   plans.value = plans.value.filter((plan) => plan.id !== id)
+  ElMessage.success('排课方案及关联课表数据已删除。')
 }
 
 function adjustSchedule(id: string): void {
@@ -273,8 +327,38 @@ function adjustSchedule(id: string): void {
       </div>
     </header>
 
-    <section class="plan-grid">
-      <article v-for="plan in plans" :key="plan.id" class="plan-card">
+    <section v-if="!plansReady" class="plan-grid plan-skeleton-grid" aria-label="正在读取排课方案" aria-busy="true">
+      <article class="plan-card plan-skeleton-card">
+        <el-skeleton animated>
+          <template #template>
+            <div class="plan-skeleton-head">
+              <el-skeleton-item variant="h1" class="plan-skeleton-title" />
+              <el-skeleton-item variant="text" class="plan-skeleton-link" />
+            </div>
+            <el-skeleton-item variant="text" class="plan-skeleton-line plan-skeleton-line--wide" />
+            <el-skeleton-item variant="text" class="plan-skeleton-line" />
+            <el-skeleton-item variant="rect" class="plan-skeleton-progress" />
+            <div class="plan-skeleton-actions">
+              <el-skeleton-item variant="button" />
+              <el-skeleton-item variant="button" />
+              <el-skeleton-item variant="button" />
+            </div>
+          </template>
+        </el-skeleton>
+      </article>
+
+      <div class="plan-create-card plan-skeleton-create" aria-hidden="true">
+        <el-skeleton animated>
+          <template #template>
+            <el-skeleton-item variant="circle" class="plan-skeleton-plus" />
+            <el-skeleton-item variant="text" class="plan-skeleton-create-label" />
+          </template>
+        </el-skeleton>
+      </div>
+    </section>
+
+    <section v-else class="plan-grid">
+      <article v-for="plan in sortedPlans" :key="plan.id" class="plan-card">
         <div class="plan-card-head">
           <h2>{{ plan.name }}</h2>
           <el-button type="primary" link @click="openRenameDialog(plan)">重命名</el-button>
@@ -283,10 +367,15 @@ function adjustSchedule(id: string): void {
         <p>排课模式：{{ plan.mode }}</p>
         <div class="progress-row">
           <span>排课进度：</span>
-          <strong v-if="!hasUnmetRequiredItems">{{ plan.progress }}%</strong>
-          <el-tag v-else type="danger" effect="light" size="small">未设置{{ firstUnmetRequiredLabel }}</el-tag>
+          <div class="plan-progress-status">
+            <span v-if="!plansReady" class="plan-progress-loading" aria-label="排课进度加载中">--</span>
+            <strong v-else-if="!hasUnmetRequiredItems" class="plan-progress-number">
+              <span>{{ displayedProgress(plan) }}</span><small>%</small>
+            </strong>
+            <el-tag v-else type="danger" effect="light" size="small">未设置{{ firstUnmetRequiredLabel }}</el-tag>
+          </div>
           <el-button
-            v-if="!hasUnmetRequiredItems"
+            v-if="plansReady && !hasUnmetRequiredItems"
             type="primary"
             link
             class="plan-adjust-btn"
@@ -339,3 +428,153 @@ function adjustSchedule(id: string): void {
     </el-dialog>
   </article>
 </template>
+
+<style scoped>
+.plan-skeleton-card {
+  pointer-events: none;
+}
+
+.plan-skeleton-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.plan-skeleton-title {
+  width: 42%;
+  height: 28px;
+}
+
+.plan-skeleton-link {
+  width: 52px;
+}
+
+.plan-skeleton-line {
+  display: block;
+  width: 58%;
+  margin-bottom: 20px;
+}
+
+.plan-skeleton-line--wide {
+  width: 72%;
+}
+
+.plan-skeleton-progress {
+  width: 100%;
+  height: 8px;
+  margin: 2px 0 24px;
+  border-radius: 999px;
+}
+
+.plan-skeleton-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #edf1f7;
+}
+
+.plan-skeleton-actions .el-skeleton__item {
+  width: 64px;
+  height: 28px;
+}
+
+.plan-skeleton-create {
+  pointer-events: none;
+}
+
+.plan-skeleton-create :deep(.el-skeleton__content) {
+  display: flex;
+  min-height: 184px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+
+.plan-skeleton-plus {
+  width: 42px;
+  height: 42px;
+}
+
+.plan-skeleton-create-label {
+  width: 112px;
+}
+
+.schedule-panel .progress-row {
+  display: grid;
+  grid-template-columns: auto minmax(112px, max-content) minmax(0, 1fr);
+  align-items: center;
+  min-height: 32px;
+  gap: 8px;
+}
+
+.plan-progress-status {
+  display: flex;
+  align-items: center;
+  min-width: 112px;
+  min-height: 28px;
+}
+
+.plan-progress-loading {
+  display: inline-block;
+  width: 46px;
+  color: #a8b3c8;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 2px;
+}
+
+.plan-progress-number {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 52px;
+  overflow: hidden;
+  color: #1fa862;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.plan-progress-number > span {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: right;
+  animation: plan-progress-roll 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.plan-progress-number small {
+  margin-left: 1px;
+  font-size: 1em;
+  font-weight: inherit;
+}
+
+.schedule-panel .plan-adjust-btn {
+  justify-self: end;
+  margin-left: 0;
+}
+
+@keyframes plan-progress-roll {
+  from {
+    opacity: 0.2;
+    transform: translateY(70%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-progress-number > span { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .schedule-panel .progress-row {
+    grid-template-columns: auto minmax(96px, max-content) minmax(0, 1fr);
+  }
+
+  .plan-progress-status { min-width: 96px; }
+}
+</style>

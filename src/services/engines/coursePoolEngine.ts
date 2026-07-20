@@ -15,9 +15,14 @@ export type CoursePoolBlock = {
   teacher: string
   color: string
   remaining: number
+  isOddEven?: boolean
+  oddCourseId?: string
+  evenCourseId?: string
+  oddCourseName?: string
+  evenCourseName?: string
 }
 
-type BuildRequiredCourseBlocksParams = {
+export type BuildRequiredCourseBlocksParams = {
   campusName: string
   grade: string
   className: string
@@ -29,8 +34,57 @@ type BuildRequiredCourseBlocksParams = {
   courseColorById: Map<string, string>
 }
 
+export type OddEvenCountIssue = {
+  className: string
+  oddCourseName: string
+  evenCourseName: string
+  oddCount: number
+  evenCount: number
+  message: string
+}
+
 function toNonNegativeInt(raw: unknown): number {
   return Math.max(0, Math.floor(Number(raw) || 0))
+}
+
+function buildCourseIdResolver(params: BuildRequiredCourseBlocksParams): (raw: string) => string {
+  const courseIdByName = new Map(params.courses.map((item) => [item.name, item.id] as const))
+  return (raw: string): string => {
+    if (!raw) return ''
+    if (params.courseNameById.has(raw)) return raw
+    return courseIdByName.get(raw) || ''
+  }
+}
+
+export function findOddEvenCountIssues(params: BuildRequiredCourseBlocksParams): OddEvenCountIssue[] {
+  const resolveCourseIdByRuleValue = buildCourseIdResolver(params)
+  return params.oddEvenRules
+    .filter(
+      (rule) =>
+        rule.campus === params.campusName &&
+        rule.grade === params.grade &&
+        rule.classNames.includes(params.className)
+    )
+    .flatMap((rule) => {
+      const oddCourseId = resolveCourseIdByRuleValue(rule.oddCourse)
+      const evenCourseId = resolveCourseIdByRuleValue(rule.evenCourse)
+      if (!oddCourseId || !evenCourseId || oddCourseId === evenCourseId) return []
+      const oddCount = toNonNegativeInt(params.arrangedValues[oddCourseId])
+      const evenCount = toNonNegativeInt(params.arrangedValues[evenCourseId])
+      if (oddCount === evenCount || (oddCount === 0 && evenCount === 0)) return []
+      const oddCourseName = params.courseNameById.get(oddCourseId) || rule.oddCourse
+      const evenCourseName = params.courseNameById.get(evenCourseId) || rule.evenCourse
+      return [
+        {
+          className: params.className,
+          oddCourseName,
+          evenCourseName,
+          oddCount,
+          evenCount,
+          message: `${params.className}“${oddCourseName}/${evenCourseName}”单双周课时不一致（${oddCount}/${evenCount}）`
+        }
+      ]
+    })
 }
 
 export function buildRequiredCourseBlocks(params: BuildRequiredCourseBlocksParams): CoursePoolBlock[] {
@@ -40,18 +94,12 @@ export function buildRequiredCourseBlocks(params: BuildRequiredCourseBlocksParam
     className,
     arrangedValues,
     oddEvenRules,
-    courses,
     teacherNameByCourseId,
     courseNameById,
     courseColorById
   } = params
 
-  const courseIdByName = new Map(courses.map((item) => [item.name, item.id] as const))
-  const resolveCourseIdByRuleValue = (raw: string): string => {
-    if (!raw) return ''
-    if (courseNameById.has(raw)) return raw
-    return courseIdByName.get(raw) || ''
-  }
+  const resolveCourseIdByRuleValue = buildCourseIdResolver(params)
 
   const handledCourseIds = new Set<string>()
   const list: CoursePoolBlock[] = []
@@ -65,8 +113,8 @@ export function buildRequiredCourseBlocks(params: BuildRequiredCourseBlocksParam
 
       const oddCount = toNonNegativeInt(arrangedValues[oddCourseId])
       const evenCount = toNonNegativeInt(arrangedValues[evenCourseId])
-      const mergedCount = Math.max(oddCount, evenCount)
-      if (mergedCount <= 0) return
+      if (oddCount <= 0 || evenCount <= 0 || oddCount !== evenCount) return
+      const mergedCount = oddCount
 
       const assignmentKey = `oe:${oddCourseId}|${evenCourseId}`
       const oddTeacherName = teacherNameByCourseId.get(oddCourseId) || '未设置教师'
@@ -82,7 +130,12 @@ export function buildRequiredCourseBlocks(params: BuildRequiredCourseBlocksParam
           name: mergedName,
           teacher: `${oddTeacherName} / ${evenTeacherName}`,
           color: courseColorById.get(oddCourseId) || '#5b8fd1',
-          remaining: 0
+          remaining: 0,
+          isOddEven: true,
+          oddCourseId,
+          evenCourseId,
+          oddCourseName: courseNameById.get(oddCourseId) || rule.oddCourse,
+          evenCourseName: courseNameById.get(evenCourseId) || rule.evenCourse
         })
       }
       handledCourseIds.add(oddCourseId)

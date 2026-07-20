@@ -1,6 +1,17 @@
-import { BadRequestException, Body, Controller, Inject, Param, Post, ServiceUnavailableException } from '@nestjs/common'
-import { normalizeProfile } from './types.js'
-import { OrtoolsSolveError, SmartSchedulerService } from './smart-scheduler.service.js'
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  NotFoundException,
+  Param,
+  Post,
+  Query
+} from '@nestjs/common'
+import { SmartSchedulerQueueService } from './smart-scheduler-queue.service.js'
+import { normalizeProfile, sanitizeAccountId } from './types.js'
 import type { SmartSolveRequest } from './smart-scheduler.types.js'
 
 type DefaultRulePair = {
@@ -11,40 +22,41 @@ type DefaultRulePair = {
 
 @Controller()
 export class SmartSchedulerController {
-  constructor(@Inject(SmartSchedulerService) private readonly scheduler: SmartSchedulerService) {}
+  constructor(@Inject(SmartSchedulerQueueService) private readonly queue: SmartSchedulerQueueService) {}
 
   @Post('/api/:profile/scheduler/solve-smart')
-  async solveSmart(@Param('profile') profileParam: string, @Body() body: unknown) {
+  @HttpCode(202)
+  solveSmart(
+    @Param('profile') profileParam: string,
+    @Query('accountId') accountIdParam: string | undefined,
+    @Body() body: unknown
+  ) {
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
-    normalizeProfile(profileParam)
+    const profile = normalizeProfile(profileParam)
+    const accountId = sanitizeAccountId(accountIdParam)
     const request = this.parseRequest(body)
-    let solved
-    try {
-      solved = await this.scheduler.solveSmart(request)
-    } catch (error) {
-      if (error instanceof OrtoolsSolveError) {
-        throw new ServiceUnavailableException({
-          code: error.code,
-          message: `智能排课失败：${error.message}`,
-          detail: error.detail
-        })
-      }
-      const reason = error instanceof Error ? error.message : String(error)
-      throw new ServiceUnavailableException({
-        code: 'ORTOOLS_UNKNOWN',
-        message: `智能排课失败：${reason}`,
-        detail: ''
-      })
-    }
     return {
       ok: true,
-      engine: solved.engine,
-      fallback: solved.fallback,
-      result: solved.result,
-      logs: solved.logs
+      job: this.queue.enqueue(accountId, profile, request)
     }
+  }
+
+  @Get('/api/:profile/scheduler/solve-smart/:jobId')
+  getSmartJob(
+    @Param('profile') profileParam: string,
+    @Param('jobId') jobId: string,
+    @Query('accountId') accountIdParam?: string
+  ) {
+    if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
+      throw new BadRequestException('profile must be test or prod')
+    }
+    const profile = normalizeProfile(profileParam)
+    const accountId = sanitizeAccountId(accountIdParam)
+    const job = this.queue.getJob(accountId, profile, String(jobId || '').trim())
+    if (!job) throw new NotFoundException('智能排课任务不存在或已过期')
+    return { ok: true, job }
   }
 
   private parseDefaultRulePair(raw: unknown): DefaultRulePair {
@@ -86,6 +98,22 @@ export class SmartSchedulerController {
         ? (raw.noonBoundaryByClass as Record<string, unknown>)
         : {}
     const consecutiveConstraintsRaw = Array.isArray(raw.consecutiveConstraints) ? raw.consecutiveConstraints : []
+    const courseRelationConstraintsRaw = Array.isArray(raw.courseRelationConstraints) ? raw.courseRelationConstraints : []
+    const teacherRuleOptionsRaw =
+      raw.teacherRuleOptions && typeof raw.teacherRuleOptions === 'object' && !Array.isArray(raw.teacherRuleOptions)
+        ? (raw.teacherRuleOptions as Record<string, unknown>)
+        : {}
+    const ruleOptionsRaw =
+      raw.ruleOptions && typeof raw.ruleOptions === 'object' && !Array.isArray(raw.ruleOptions)
+        ? (raw.ruleOptions as Record<string, unknown>)
+        : {}
+    const boundedWeight = (value: unknown, fallback: number, max = 1000): number => {
+      const numeric = Number(value)
+      if (!Number.isFinite(numeric)) return fallback
+      return Math.max(0, Math.min(max, Math.floor(numeric)))
+    }
+    const optionalBoolean = (value: unknown): boolean | undefined =>
+      typeof value === 'boolean' ? value : undefined
 
     return {
       selectedClassId: String(raw.selectedClassId),
@@ -137,6 +165,36 @@ export class SmartSchedulerController {
             }))
             .filter((item) => item.teacherName)
         : [],
+      teacherMutualConstraints: Array.isArray(raw.teacherMutualConstraints)
+        ? raw.teacherMutualConstraints
+            .map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null))
+            .filter((item): item is Record<string, unknown> => Boolean(item))
+            .map((item) => ({
+              teacherGroupA: Array.isArray(item.teacherGroupA)
+                ? Array.from(new Set(item.teacherGroupA.map((name) => String(name || '').trim()).filter(Boolean)))
+                : [],
+              teacherGroupB: Array.isArray(item.teacherGroupB)
+                ? Array.from(new Set(item.teacherGroupB.map((name) => String(name || '').trim()).filter(Boolean)))
+                : []
+            }))
+            .filter((item) => item.teacherGroupA.length > 0 && item.teacherGroupB.length > 0)
+        : [],
+      teacherRuleOptions: {
+        enableTeacherMutual: optionalBoolean(teacherRuleOptionsRaw.enableTeacherMutual),
+        weekDistributionWeight: boundedWeight(teacherRuleOptionsRaw.weekDistributionWeight, 45),
+        dayDistributionWeight: boundedWeight(teacherRuleOptionsRaw.dayDistributionWeight, 25)
+      },
+      ruleOptions: {
+        enableGlobalFixedPoint: optionalBoolean(ruleOptionsRaw.enableGlobalFixedPoint),
+        enableCombineCourse: optionalBoolean(ruleOptionsRaw.enableCombineCourse),
+        enableCourseArea: optionalBoolean(ruleOptionsRaw.enableCourseArea),
+        enableCourseBan: optionalBoolean(ruleOptionsRaw.enableCourseBan),
+        enableCourseDefault: optionalBoolean(ruleOptionsRaw.enableCourseDefault),
+        enableMainSecondary: optionalBoolean(ruleOptionsRaw.enableMainSecondary),
+        enableOddEven: optionalBoolean(ruleOptionsRaw.enableOddEven),
+        enableCourseRelation: optionalBoolean(ruleOptionsRaw.enableCourseRelation),
+        consecutivePreferredWeight: boundedWeight(ruleOptionsRaw.consecutivePreferredWeight, 30, 2000)
+      },
       consecutiveConstraints: consecutiveConstraintsRaw
         .map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null))
         .filter((item): item is Record<string, unknown> => Boolean(item))
@@ -149,6 +207,26 @@ export class SmartSchedulerController {
             : []
         }))
         .filter((item) => item.classId && item.courseIds.length > 0 && item.weeklyConsecutiveCount > 0),
+      courseRelationConstraints: courseRelationConstraintsRaw
+        .map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null))
+        .filter((item): item is Record<string, unknown> => Boolean(item))
+        .map((item) => ({
+          classId: String(item.classId || '').trim(),
+          courseAIds: Array.isArray(item.courseAIds)
+            ? Array.from(new Set(item.courseAIds.map((value) => String(value || '').trim()).filter(Boolean)))
+            : [],
+          courseBIds: Array.isArray(item.courseBIds)
+            ? Array.from(new Set(item.courseBIds.map((value) => String(value || '').trim()).filter(Boolean)))
+            : [],
+          relationType: String(item.relationType || '') as '前后互斥' | '同天互斥'
+        }))
+        .filter(
+          (item) =>
+            item.classId &&
+            item.courseAIds.length > 0 &&
+            item.courseBIds.length > 0 &&
+            ['前后互斥', '同天互斥'].includes(item.relationType)
+        ),
       scheduleMap: raw.scheduleMap as SmartSolveRequest['scheduleMap'],
       demands: raw.demands as SmartSolveRequest['demands']
     }

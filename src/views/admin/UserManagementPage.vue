@@ -13,8 +13,9 @@ import {
   updateManagedUserStatus,
   type ManagedUser
 } from '../../services/userManagementApi'
+import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 
-const loading = ref(false)
+const loading = ref(true)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const passwordDialogVisible = ref(false)
@@ -133,6 +134,12 @@ async function loadUsers(): Promise<void> {
     errorMessage.value = error instanceof Error ? error.message : '读取账户列表失败'
   } finally {
     loading.value = false
+    await nextTick()
+    syncTableWidth()
+    if (typeof ResizeObserver !== 'undefined' && tableWrapRef.value && !tableResizeObserver) {
+      tableResizeObserver = new ResizeObserver(() => syncTableWidth())
+      tableResizeObserver.observe(tableWrapRef.value)
+    }
   }
 }
 
@@ -520,13 +527,6 @@ async function switchView(nextView: 'active' | 'trash'): Promise<void> {
 }
 
 onMounted(() => {
-  syncTableWidth()
-  if (typeof ResizeObserver !== 'undefined' && tableWrapRef.value) {
-    tableResizeObserver = new ResizeObserver(() => {
-      syncTableWidth()
-    })
-    tableResizeObserver.observe(tableWrapRef.value)
-  }
   void loadUsers()
 })
 
@@ -537,7 +537,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <article class="panel user-management-panel">
+  <AppContentSkeleton v-if="loading" variant="table" />
+  <article v-else class="panel user-management-panel">
     <div class="user-management-head">
       <div>
         <h1>账户管理</h1>
@@ -587,7 +588,6 @@ onBeforeUnmount(() => {
     <div ref="tableWrapRef" class="account-table-wrap">
       <el-table
         ref="accountTableRef"
-        v-loading="loading"
         :data="users"
         border
         class="account-table"

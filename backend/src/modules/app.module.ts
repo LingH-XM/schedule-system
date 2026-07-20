@@ -9,10 +9,11 @@ import { SystemController } from './system.controller.js'
 import { JsonStorageService } from './json-storage.service.js'
 import { PrismaService } from './prisma.service.js'
 import { SmartSchedulerService } from './smart-scheduler.service.js'
+import { SmartSchedulerQueueService } from './smart-scheduler-queue.service.js'
 import { StructuredDataSyncService } from './structured-data-sync.service.js'
 
 @Module({
   controllers: [AuthController, BasicDataController, RuleSettingsController, ScheduleStateController, SmartSchedulerController, SystemController],
-  providers: [AuthService, JsonStorageService, PrismaService, SmartSchedulerService, StructuredDataSyncService]
+  providers: [AuthService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService]
 })
 export class AppModule {}
