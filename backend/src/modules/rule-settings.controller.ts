@@ -1,51 +1,56 @@
-import { BadRequestException, Body, Controller, Get, Inject, Param, Put, Query } from '@nestjs/common'
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Inject, Param, Put, Query, Req, UseGuards } from '@nestjs/common'
+import { AuthGuard, requireAuth } from './auth.guard.js'
+import { hasPermission, type AuthenticatedRequest } from './auth.types.js'
 import { JsonStorageService } from './json-storage.service.js'
-import { normalizeProfile, sanitizeAccountId, sanitizePlanId } from './types.js'
+import { normalizeProfile, sanitizePlanId } from './types.js'
 
 @Controller()
+@UseGuards(AuthGuard)
 export class RuleSettingsController {
   constructor(@Inject(JsonStorageService) private readonly storage: JsonStorageService) {}
 
   @Get('/api/:profile/rule-settings')
   async getScoped(
+    @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Query('planId') planIdParam?: string,
-    @Query('accountId') accountIdParam?: string
+    @Query('planId') planIdParam?: string
   ) {
+    const auth = requireAuth(request)
+    if (!hasPermission(auth, 'rules.read')) throw new ForbiddenException('没有查看排课规则的权限')
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
     const planId = sanitizePlanId(planIdParam)
-    const accountId = sanitizeAccountId(accountIdParam)
-    return this.storage.read(accountId, profile, planId, 'rule-settings')
+    return this.storage.read(auth.schoolId, profile, planId, 'rule-settings')
   }
 
   @Put('/api/:profile/rule-settings')
   async putScoped(
+    @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
     @Query('planId') planIdParam: string | undefined,
-    @Query('accountId') accountIdParam: string | undefined,
     @Body() body: unknown
   ) {
+    const auth = requireAuth(request)
+    if (!hasPermission(auth, 'rules.edit')) throw new ForbiddenException('没有修改排课规则的权限')
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    return this.write(profile, planIdParam, accountIdParam, body, 'rule-settings')
+    return this.write(auth.schoolId, profile, planIdParam, body, 'rule-settings')
   }
 
   private async write(
+    schoolId: string,
     profile: 'test' | 'prod',
     planIdParam: string | undefined,
-    accountIdParam: string | undefined,
     body: unknown,
     resource: 'rule-settings'
   ) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Invalid payload: expected JSON object')
     }
-    const accountId = sanitizeAccountId(accountIdParam)
     const planId = sanitizePlanId(planIdParam)
     const payload = {
       ...(body as Record<string, unknown>),
@@ -54,7 +59,7 @@ export class RuleSettingsController {
           ? Number((body as { _savedAt?: number })._savedAt)
           : Date.now()
     }
-    await this.storage.write(accountId, profile, planId, resource, payload)
-    return { ok: true, accountId, profile, planId, resource }
+    await this.storage.write(schoolId, profile, planId, resource, payload)
+    return { ok: true, schoolId, profile, planId, resource }
   }
 }

@@ -1,4 +1,5 @@
 import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { authHeaders } from './auth'
 
 export type OddEvenRuleRecord = {
   id: string
@@ -90,6 +91,7 @@ export type TeacherBanRuleMap = Record<string, Record<string, boolean>>
 export type CourseDefaultRuleKey =
   | 'syncStart'
   | 'distribution'
+  | 'differentDayPeriod'
   | 'noCrossNoon'
   | 'sameClassNoConsecutive'
   | 'twoLessonsGap'
@@ -204,6 +206,7 @@ export const defaultCourseDefaultConfig: CourseDefaultConfig = {
   rules: {
     syncStart: { main: '尽量一致', secondary: '无特殊要求' },
     distribution: { main: '尽量分散到不同天', secondary: '尽量分散到不同天' },
+    differentDayPeriod: { main: '尽量不同节次', secondary: '尽量不同节次' },
     noCrossNoon: { main: '不能让老师在上午末节和下午首节连上', secondary: '不能让老师在上午末节和下午首节连上' },
     sameClassNoConsecutive: { main: '优先不连堂', secondary: '优先不连堂' },
     twoLessonsGap: { main: '是', secondary: '是' }
@@ -211,6 +214,7 @@ export const defaultCourseDefaultConfig: CourseDefaultConfig = {
   ruleEnabled: {
     syncStart: true,
     distribution: true,
+    differentDayPeriod: true,
     noCrossNoon: true,
     sameClassNoConsecutive: true,
     twoLessonsGap: true
@@ -222,6 +226,7 @@ const legacyCourseDefaultConfig: CourseDefaultConfig = {
   rules: {
     syncStart: { main: '必须一致', secondary: '必须一致' },
     distribution: { main: '尽量在一上午/一下午集中上完', secondary: '尽量在一上午/一下午集中上完' },
+    differentDayPeriod: { main: '尽量不同节次', secondary: '尽量不同节次' },
     noCrossNoon: { main: '不能让老师在上午末节和下午首节连上', secondary: '不能让老师在上午末节和下午首节连上' },
     sameClassNoConsecutive: { main: '无特殊要求', secondary: '无特殊要求' },
     twoLessonsGap: { main: '是', secondary: '是' }
@@ -229,6 +234,7 @@ const legacyCourseDefaultConfig: CourseDefaultConfig = {
   ruleEnabled: {
     syncStart: true,
     distribution: true,
+    differentDayPeriod: true,
     noCrossNoon: true,
     sameClassNoConsecutive: true,
     twoLessonsGap: true
@@ -241,6 +247,7 @@ export function cloneCourseDefaultConfig(config: CourseDefaultConfig = defaultCo
     rules: {
       syncStart: { ...config.rules.syncStart },
       distribution: { ...config.rules.distribution },
+      differentDayPeriod: { ...config.rules.differentDayPeriod },
       noCrossNoon: { ...config.rules.noCrossNoon },
       sameClassNoConsecutive: { ...config.rules.sameClassNoConsecutive },
       twoLessonsGap: { ...config.rules.twoLessonsGap }
@@ -644,6 +651,14 @@ function normalizeCourseDefaultConfig(value: unknown): CourseDefaultConfig {
         main: normalizeDistributionValue(rawRules.distribution?.main, fallback.rules.distribution.main),
         secondary: normalizeDistributionValue(rawRules.distribution?.secondary, fallback.rules.distribution.secondary)
       },
+      differentDayPeriod: {
+        main: typeof rawRules.differentDayPeriod?.main === 'string'
+          ? rawRules.differentDayPeriod.main
+          : fallback.rules.differentDayPeriod.main,
+        secondary: typeof rawRules.differentDayPeriod?.secondary === 'string'
+          ? rawRules.differentDayPeriod.secondary
+          : fallback.rules.differentDayPeriod.secondary
+      },
       noCrossNoon: {
         main: typeof rawRules.noCrossNoon?.main === 'string' ? rawRules.noCrossNoon.main : fallback.rules.noCrossNoon.main,
         secondary: typeof rawRules.noCrossNoon?.secondary === 'string'
@@ -668,6 +683,7 @@ function normalizeCourseDefaultConfig(value: unknown): CourseDefaultConfig {
     ruleEnabled: {
       syncStart: (raw.ruleEnabled as Record<string, unknown> | undefined)?.syncStart !== false,
       distribution: (raw.ruleEnabled as Record<string, unknown> | undefined)?.distribution !== false,
+      differentDayPeriod: (raw.ruleEnabled as Record<string, unknown> | undefined)?.differentDayPeriod !== false,
       noCrossNoon: (raw.ruleEnabled as Record<string, unknown> | undefined)?.noCrossNoon !== false,
       sameClassNoConsecutive: (raw.ruleEnabled as Record<string, unknown> | undefined)?.sameClassNoConsecutive !== false,
       twoLessonsGap: (raw.ruleEnabled as Record<string, unknown> | undefined)?.twoLessonsGap !== false
@@ -945,9 +961,7 @@ export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
     const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
     void fetch(endpoint, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(serialized)
     }).catch((error) => {
       console.warn('[RuleSettings] API 保存失败，已保存在本地存储。', error)
@@ -963,7 +977,7 @@ export async function hydrateRuleSettingsSnapshotFromApi(): Promise<RuleSettings
 
   const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
   try {
-    const response = await fetch(endpoint, { method: 'GET' })
+    const response = await fetch(endpoint, { method: 'GET', headers: authHeaders() })
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }

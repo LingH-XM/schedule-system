@@ -2,16 +2,21 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   Inject,
   NotFoundException,
   Param,
   Post,
-  Query
+  Req,
+  UseGuards
 } from '@nestjs/common'
+import { AuthGuard, requireAuth } from './auth.guard.js'
+import { hasPermission, hasScope, type AuthenticatedRequest } from './auth.types.js'
+import { PrismaService } from './prisma.service.js'
 import { SmartSchedulerQueueService } from './smart-scheduler-queue.service.js'
-import { normalizeProfile, sanitizeAccountId } from './types.js'
+import { normalizeProfile } from './types.js'
 import type { SmartSolveRequest } from './smart-scheduler.types.js'
 
 type DefaultRulePair = {
@@ -21,42 +26,65 @@ type DefaultRulePair = {
 }
 
 @Controller()
+@UseGuards(AuthGuard)
 export class SmartSchedulerController {
-  constructor(@Inject(SmartSchedulerQueueService) private readonly queue: SmartSchedulerQueueService) {}
+  constructor(
+    @Inject(SmartSchedulerQueueService) private readonly queue: SmartSchedulerQueueService,
+    @Inject(PrismaService) private readonly prismaService: PrismaService
+  ) {}
 
   @Post('/api/:profile/scheduler/solve-smart')
   @HttpCode(202)
-  solveSmart(
+  async solveSmart(
+    @Req() httpRequest: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Query('accountId') accountIdParam: string | undefined,
     @Body() body: unknown
   ) {
+    const auth = requireAuth(httpRequest)
+    if (!hasPermission(auth, 'schedule.solve')) throw new ForbiddenException('没有提交智能排课的权限')
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    const accountId = sanitizeAccountId(accountIdParam)
     const request = this.parseRequest(body)
+    await this.assertClassScope(auth, profile, request.classIds)
     return {
       ok: true,
-      job: this.queue.enqueue(accountId, profile, request)
+      job: this.queue.enqueue(auth.schoolId, auth.userId, profile, request)
     }
   }
 
   @Get('/api/:profile/scheduler/solve-smart/:jobId')
   getSmartJob(
+    @Req() httpRequest: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Param('jobId') jobId: string,
-    @Query('accountId') accountIdParam?: string
+    @Param('jobId') jobId: string
   ) {
+    const auth = requireAuth(httpRequest)
+    if (!hasPermission(auth, 'schedule.read')) throw new ForbiddenException('没有查看智能排课任务的权限')
     if (!['test', 'prod'].includes(String(profileParam || '').toLowerCase())) {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    const accountId = sanitizeAccountId(accountIdParam)
-    const job = this.queue.getJob(accountId, profile, String(jobId || '').trim())
+    const job = this.queue.getJob(auth.schoolId, auth.userId, profile, String(jobId || '').trim())
     if (!job) throw new NotFoundException('智能排课任务不存在或已过期')
     return { ok: true, job }
+  }
+
+  private async assertClassScope(auth: NonNullable<AuthenticatedRequest['auth']>, profile: 'test' | 'prod', classIds: string[]) {
+    if (auth.role === 'super_admin' || auth.role === 'school_admin') return
+    const prisma = await this.prismaService.getClient()
+    if (!prisma?.schoolClass) return
+    const classes = await prisma.schoolClass.findMany({
+      where: { schoolId: auth.schoolId, profile, classId: { in: classIds } },
+      select: { campusId: true, grade: true }
+    })
+    if (classes.length !== new Set(classIds).size) {
+      throw new ForbiddenException('无法确认部分班级的授权范围')
+    }
+    if (classes.some((item) => !hasScope(auth, item.campusId, item.grade))) {
+      throw new ForbiddenException('智能排课请求包含未授权的年级或校区')
+    }
   }
 
   private parseDefaultRulePair(raw: unknown): DefaultRulePair {
@@ -130,6 +158,7 @@ export class SmartSchedulerController {
           : [],
         syncStart: this.parseDefaultRulePair(defaultRulesRaw.syncStart),
         distribution: this.parseDefaultRulePair(defaultRulesRaw.distribution),
+        differentDayPeriod: this.parseDefaultRulePair(defaultRulesRaw.differentDayPeriod),
         noCrossNoon: this.parseDefaultRulePair(defaultRulesRaw.noCrossNoon),
         sameClassNoConsecutive: this.parseDefaultRulePair(defaultRulesRaw.sameClassNoConsecutive),
         twoLessonsGap: this.parseDefaultRulePair(defaultRulesRaw.twoLessonsGap)

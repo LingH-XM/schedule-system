@@ -14,7 +14,8 @@ type SmartSchedulerJobError = {
 
 type SmartSchedulerJob = {
   id: string
-  accountId: string
+  schoolId: string
+  ownerUserId: string
   profile: DataProfile
   request: SmartSolveRequest
   status: SmartSchedulerJobStatus
@@ -54,12 +55,13 @@ export class SmartSchedulerQueueService {
 
   constructor(@Inject(SmartSchedulerService) private readonly scheduler: SmartSchedulerService) {}
 
-  enqueue(accountId: string, profile: DataProfile, request: SmartSolveRequest): SmartSchedulerJobSnapshot {
+  enqueue(schoolId: string, ownerUserId: string, profile: DataProfile, request: SmartSolveRequest): SmartSchedulerJobSnapshot {
     this.cleanupFinishedJobs()
     const now = Date.now()
     const job: SmartSchedulerJob = {
       id: randomUUID(),
-      accountId,
+      schoolId,
+      ownerUserId,
       profile,
       request,
       status: 'queued',
@@ -76,9 +78,9 @@ export class SmartSchedulerQueueService {
     return this.toSnapshot(job)
   }
 
-  getJob(accountId: string, profile: DataProfile, jobId: string): SmartSchedulerJobSnapshot | null {
+  getJob(schoolId: string, ownerUserId: string, profile: DataProfile, jobId: string): SmartSchedulerJobSnapshot | null {
     const job = this.jobs.get(jobId)
-    if (!job || job.accountId !== accountId || job.profile !== profile) return null
+    if (!job || job.schoolId !== schoolId || job.ownerUserId !== ownerUserId || job.profile !== profile) return null
     return this.toSnapshot(job)
   }
 
@@ -95,7 +97,7 @@ export class SmartSchedulerQueueService {
         this.activeJobId = job.id
         job.status = 'running'
         job.startedAt = Date.now()
-        this.logger.log(`开始智能排课任务 ${job.id}，账户 ${job.accountId}`)
+        this.logger.log(`开始智能排课任务 ${job.id}，账户 ${job.schoolId}`)
         try {
           job.result = await this.scheduler.solveSmart(job.request)
           job.status = 'completed'

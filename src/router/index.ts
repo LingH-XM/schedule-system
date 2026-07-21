@@ -10,12 +10,15 @@ import ScheduleWorkbenchPage from '../views/admin/ScheduleWorkbenchPage.vue'
 import TeacherHoursStatisticsPage from '../views/admin/TeacherHoursStatisticsPage.vue'
 import TimetableManagementPage from '../views/admin/TimetableManagementPage.vue'
 import HelpCenterPage from '../views/admin/HelpCenterPage.vue'
-import { getCurrentUser, hasRequiredRole, isAuthenticated } from '../services/auth'
+import DesignShowcaseView from '../views/DesignShowcaseView.vue'
+import { getCurrentUser, hasPermission, hasRequiredRole, isAuthenticated } from '../services/auth'
+import type { AuthRole } from '../types/auth'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/design-showcase', name: 'designShowcase', component: DesignShowcaseView },
     {
       path: '/help/:page?',
       name: 'helpCenter',
@@ -29,13 +32,13 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/dashboard' },
         { path: 'dashboard', name: 'dashboard', component: DashboardPage },
-        { path: 'users', name: 'userManagement', component: UserManagementPage, meta: { requiresAuth: true, role: 'super_admin' } },
-        { path: 'basic-data', name: 'basicData', component: BasicDataPage },
-        { path: 'rule-settings', name: 'ruleSettings', component: RuleSettingsPage },
-        { path: 'schedules', name: 'schedules', component: SchedulesPage },
-        { path: 'teacher-hours-statistics', name: 'teacherHoursStatistics', component: TeacherHoursStatisticsPage },
-        { path: 'timetable-management', name: 'timetableManagement', component: TimetableManagementPage },
-        { path: 'schedules/workbench', name: 'scheduleWorkbench', component: ScheduleWorkbenchPage }
+        { path: 'users', name: 'userManagement', component: UserManagementPage, meta: { requiresAuth: true, role: 'school_admin' } },
+        { path: 'basic-data', name: 'basicData', component: BasicDataPage, meta: { permission: 'basic_data.read' } },
+        { path: 'rule-settings', name: 'ruleSettings', component: RuleSettingsPage, meta: { permission: 'rules.read' } },
+        { path: 'schedules', name: 'schedules', component: SchedulesPage, meta: { permission: 'schedule.read' } },
+        { path: 'teacher-hours-statistics', name: 'teacherHoursStatistics', component: TeacherHoursStatisticsPage, meta: { permission: 'timetable.read' } },
+        { path: 'timetable-management', name: 'timetableManagement', component: TimetableManagementPage, meta: { permission: 'timetable.read' } },
+        { path: 'schedules/workbench', name: 'scheduleWorkbench', component: ScheduleWorkbenchPage, meta: { permission: 'schedule.read' } }
       ]
     }
   ]
@@ -43,7 +46,7 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   if (to.meta.requiresAuth && !isAuthenticated()) {
-    return { name: 'login' }
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
 
   if (to.name === 'login' && isAuthenticated()) {
@@ -53,10 +56,13 @@ router.beforeEach((to) => {
   const requiredRole = to.meta.role as string | undefined
   if (requiredRole) {
     const currentUser = getCurrentUser()
-    if (!currentUser || !hasRequiredRole(currentUser.role, requiredRole as 'super_admin' | 'admin')) {
+    if (!currentUser || !hasRequiredRole(currentUser.role, requiredRole as AuthRole)) {
       return { name: 'dashboard' }
     }
   }
+
+  const requiredPermission = to.meta.permission as string | undefined
+  if (requiredPermission && !hasPermission(requiredPermission)) return { name: 'dashboard' }
 
   return true
 })

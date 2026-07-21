@@ -43,6 +43,7 @@ class DefaultRuleConfig(BaseModel):
     secondaryCourseIds: list[str] | None = None
     syncStart: dict[str, Any] | None = None
     distribution: dict[str, Any] | None = None
+    differentDayPeriod: dict[str, Any] | None = None
     noCrossNoon: dict[str, Any] | None = None
     sameClassNoConsecutive: dict[str, Any] | None = None
     twoLessonsGap: dict[str, Any] | None = None
@@ -829,6 +830,105 @@ def solve(payload: SmartSolveRequest):
         model.Add(both <= right)
         model.Add(both >= left + right - 1)
         return both
+
+    # 不同天节次分散：避免同一教师多天都固定在同一节上课。
+    # 以“教师 + 节次 + 日期”建立出现变量，对不同日期的同节次成对重复扣分。
+    different_day_period_terms = 0
+    different_day_period_weight = 80
+    different_day_rule = default_rules_raw.get("differentDayPeriod")
+    accepted_different_day_period_values = {"尽量不同节次", "避免不同天固定同一节"}
+    if default_rules_enabled and isinstance(different_day_rule, dict) and bool(different_day_rule.get("enabled")):
+        new_teacher_period_day: dict[tuple[str, int, str], set[tuple[int, int]]] = {}
+        existing_teacher_period_day: set[tuple[str, int, str]] = set()
+
+        for (u_idx, s_idx), _ in x.items():
+            unit = units[u_idx]
+            slot = slot_keys[s_idx]
+            meta = slot_meta.get(slot)
+            if not meta:
+                continue
+            period, day = meta
+            course_keys = {
+                str(course_key or "").strip()
+                for course_key in unit["course_key_by_class"].values()
+                if str(course_key or "").strip()
+            }
+            if not any(
+                rule_pair_has_value(
+                    different_day_rule,
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    accepted_different_day_period_values,
+                )
+                for course_key in course_keys
+            ):
+                continue
+            for teacher in unit["teachers"]:
+                if teacher:
+                    new_teacher_period_day.setdefault((teacher, period, day), set()).add((u_idx, s_idx))
+
+        for class_id in class_ids:
+            grid = payload.scheduleMap.get(class_id, {})
+            for slot in slot_keys:
+                lesson = grid.get(slot)
+                meta = slot_meta.get(slot)
+                if lesson is None or not meta:
+                    continue
+                course_key = str((lesson.courseId or lesson.assignmentKey) or "").strip()
+                if not rule_pair_has_value(
+                    different_day_rule,
+                    course_key,
+                    main_course_ids,
+                    secondary_course_ids,
+                    accepted_different_day_period_values,
+                ):
+                    continue
+                period, day = meta
+                for teacher in lesson_teachers(lesson):
+                    if teacher:
+                        existing_teacher_period_day.add((teacher, period, day))
+
+        teacher_periods = sorted(
+            {(teacher, period) for teacher, period, _ in set(new_teacher_period_day) | existing_teacher_period_day}
+        )
+        for teacher, period in teacher_periods:
+            presence_by_day: dict[str, cp_model.IntVar | int] = {}
+            for day in day_keys:
+                key = (teacher, period, day)
+                if key in existing_teacher_period_day:
+                    presence_by_day[day] = 1
+                    continue
+                indexes = new_teacher_period_day.get(key, set())
+                if not indexes:
+                    presence_by_day[day] = 0
+                    continue
+                active = model.NewBoolVar(f"teacher_period_day_{teacher}_{period}_{day}")
+                active_terms = [x[index] for index in sorted(indexes)]
+                model.Add(sum(active_terms) >= 1).OnlyEnforceIf(active)
+                model.Add(sum(active_terms) == 0).OnlyEnforceIf(active.Not())
+                presence_by_day[day] = active
+
+            for left_idx in range(len(day_keys)):
+                for right_idx in range(left_idx + 1, len(day_keys)):
+                    day_a = day_keys[left_idx]
+                    day_b = day_keys[right_idx]
+                    repeated = both_active_term(
+                        presence_by_day.get(day_a, 0),
+                        presence_by_day.get(day_b, 0),
+                        name=f"avoid_teacher_same_period_{teacher}_{period}_{day_a}_{day_b}",
+                    )
+                    if isinstance(repeated, int):
+                        if repeated:
+                            course_default_objective_terms.append(-different_day_period_weight)
+                            different_day_period_terms += 1
+                    else:
+                        course_default_objective_terms.append(-different_day_period_weight * repeated)
+                        different_day_period_terms += 1
+    push_log(
+        "规则",
+        f"不同天节次分散软偏好：加入 {different_day_period_terms} 个同教师同节次重复扣分项（权重={different_day_period_weight}）。",
+    )
 
     sync_added_constraints = 0
     sync_pair_constraints = 0

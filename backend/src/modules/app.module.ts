@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 import { AuthController } from './auth.controller.js'
 import { AuthService } from './auth.service.js'
+import { AuthGuard } from './auth.guard.js'
 import { BasicDataController } from './basic-data.controller.js'
 import { RuleSettingsController } from './rule-settings.controller.js'
 import { ScheduleStateController } from './schedule-state.controller.js'
@@ -11,9 +12,10 @@ import { PrismaService } from './prisma.service.js'
 import { SmartSchedulerService } from './smart-scheduler.service.js'
 import { SmartSchedulerQueueService } from './smart-scheduler-queue.service.js'
 import { StructuredDataSyncService } from './structured-data-sync.service.js'
+import { DataScopeService } from './data-scope.service.js'
 
 @Module({
   controllers: [AuthController, BasicDataController, RuleSettingsController, ScheduleStateController, SmartSchedulerController, SystemController],
-  providers: [AuthService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService]
+  providers: [AuthService, AuthGuard, DataScopeService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService]
 })
 export class AppModule {}

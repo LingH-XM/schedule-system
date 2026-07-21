@@ -82,6 +82,47 @@ class SolverLogicTests(unittest.TestCase):
         self.assertEqual(len(active_days), 5)
         self.assertTrue(any("课程周分布软偏好" in row["message"] for row in response["logs"]))
 
+    def test_teacher_lessons_on_different_days_prefer_different_periods(self) -> None:
+        days = ["周一", "周二", "周三", "周四", "周五"]
+        slot_keys = [f"{period}-{day}" for day in days for period in [1, 2]]
+        class_ids = ["A", "B", "C", "D", "E"]
+        demands = []
+        for class_id, day in zip(class_ids, days):
+            allowed = {f"1-{day}", f"2-{day}"}
+            demands.append(
+                {
+                    "assignmentKey": f"course-{class_id}",
+                    "sourceClassId": class_id,
+                    "remaining": 1,
+                    "targetClassIds": [class_id],
+                    "lessonsByClass": {class_id: lesson(f"course-{class_id}", "T")},
+                    "teacherNames": ["T"],
+                    "forbiddenSlotsByClass": {
+                        class_id: [slot for slot in slot_keys if slot not in allowed]
+                    },
+                }
+            )
+
+        payload = request_payload(class_ids=class_ids, slot_keys=slot_keys, demands=demands)
+        payload.defaultRules = DefaultRuleConfig(
+            enabled=True,
+            differentDayPeriod={
+                "enabled": True,
+                "main": "尽量不同节次",
+                "secondary": "尽量不同节次",
+            },
+        )
+
+        response = solve(payload)
+        periods = [int(item["slotKey"].split("-", 1)[0]) for item in response["result"]["placements"]]
+        period_counts = {period: periods.count(period) for period in set(periods)}
+
+        self.assertEqual(response["result"]["remainingCount"], 0)
+        self.assertEqual(len(periods), 5)
+        self.assertEqual(set(periods), {1, 2})
+        self.assertLessEqual(max(period_counts.values()), 3)
+        self.assertTrue(any("不同天节次分散软偏好" in row["message"] for row in response["logs"]))
+
     def test_prefer_no_consecutive_does_not_reduce_placement_count(self) -> None:
         payload = request_payload(
             class_ids=["A"],

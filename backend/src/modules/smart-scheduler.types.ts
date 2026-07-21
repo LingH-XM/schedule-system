@@ -59,6 +59,11 @@ export type SmartSolveRequest = {
       main: string
       secondary: string
     }
+    differentDayPeriod?: {
+      enabled: boolean
+      main: string
+      secondary: string
+    }
     noCrossNoon?: {
       enabled: boolean
       main: string

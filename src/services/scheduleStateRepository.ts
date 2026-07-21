@@ -1,4 +1,6 @@
 import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { authHeaders } from './auth'
+import type { AuthScope } from '../types/auth'
 
 export type PlanMode = '行政班排课'
 
@@ -8,6 +10,8 @@ export type SchedulePlan = {
   mode: PlanMode
   progress: number
   favorite: boolean
+  ownerUserId?: string
+  scopes?: AuthScope[]
 }
 
 export type WorkbenchPersistSnapshot = {
@@ -159,7 +163,7 @@ export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
   if (source !== 'api') return local
 
   try {
-    const response = await fetch(endpoint(PLANS_API_PATH), { method: 'GET' })
+    const response = await fetch(endpoint(PLANS_API_PATH), { method: 'GET', headers: authHeaders() })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = (await response.json()) as { plans?: SchedulePlan[]; _savedAt?: number }
     const apiPlans = Array.isArray(payload?.plans) ? payload.plans : []
@@ -184,7 +188,7 @@ export async function saveSchedulePlans(plans: SchedulePlan[]): Promise<void> {
   try {
     await fetch(endpoint(PLANS_API_PATH), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ plans, _savedAt: Date.now() })
     })
   } catch (error) {
@@ -212,7 +216,7 @@ export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSn
   if (source !== 'api') return local
 
   try {
-    const response = await fetch(endpoint(WORKBENCH_API_PATH), { method: 'GET' })
+    const response = await fetch(endpoint(WORKBENCH_API_PATH), { method: 'GET', headers: authHeaders() })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = (await response.json()) as Partial<WorkbenchPersistSnapshot>
     const apiState: WorkbenchPersistSnapshot = {
@@ -259,7 +263,7 @@ export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSna
   try {
     await fetch(endpoint(WORKBENCH_API_PATH), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload)
     })
   } catch (error) {

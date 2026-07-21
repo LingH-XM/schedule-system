@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common'
+import type { Prisma } from '@prisma/client'
 import { PrismaService } from './prisma.service.js'
 import type { DataProfile } from './types.js'
 
@@ -45,14 +46,14 @@ export class StructuredDataSyncService {
 
   constructor(@Inject(PrismaService) private readonly prismaService: PrismaService) {}
 
-  async syncBasicData(accountId: string, profile: DataProfile, planId: string, payload: Record<string, unknown>): Promise<void> {
+  async syncBasicData(schoolId: string, profile: DataProfile, planId: string, payload: Record<string, unknown>): Promise<void> {
     if (!this.prismaService.isEnabled()) return
     const prisma = await this.prismaService.getClient()
     if (!prisma) return
 
-    const teachers = this.normalizeTeachers(payload.teacherRecords).map((item) => ({ ...item, accountId, profile, planId }))
-    const courses = this.normalizeCourses(payload.courses).map((item) => ({ ...item, accountId, profile, planId }))
-    const classes = this.normalizeClasses(payload.classRecords).map((item) => ({ ...item, accountId, profile, planId }))
+    const teachers = this.normalizeTeachers(payload.teacherRecords).map((item) => ({ ...item, schoolId, profile, planId }))
+    const courses = this.normalizeCourses(payload.courses).map((item) => ({ ...item, schoolId, profile, planId }))
+    const classes = this.normalizeClasses(payload.classRecords).map((item) => ({ ...item, schoolId, profile, planId }))
     const teacherIdSet = new Set(teachers.map((item) => item.teacherId))
     const courseIdSet = new Set(courses.map((item) => item.courseId))
     const classIdSet = new Set(classes.map((item) => item.classId))
@@ -63,17 +64,17 @@ export class StructuredDataSyncService {
       )
       .map((item) => ({
       ...item,
-      accountId,
+      schoolId,
       profile,
       planId
     }))
 
     try {
       await prisma.$transaction([
-        prisma.teachingAssignment.deleteMany({ where: { accountId, profile, planId } }),
-        prisma.teacher.deleteMany({ where: { accountId, profile, planId } }),
-        prisma.course.deleteMany({ where: { accountId, profile, planId } }),
-        prisma.schoolClass.deleteMany({ where: { accountId, profile, planId } }),
+        prisma.teachingAssignment.deleteMany({ where: { schoolId, profile, planId } }),
+        prisma.teacher.deleteMany({ where: { schoolId, profile, planId } }),
+        prisma.course.deleteMany({ where: { schoolId, profile, planId } }),
+        prisma.schoolClass.deleteMany({ where: { schoolId, profile, planId } }),
         prisma.teacher.createMany({ data: teachers, skipDuplicates: true }),
         prisma.course.createMany({ data: courses, skipDuplicates: true }),
         prisma.schoolClass.createMany({ data: classes, skipDuplicates: true }),
@@ -114,7 +115,7 @@ export class StructuredDataSyncService {
     name: string
     shortName: string
     subject: string
-    scopes: unknown
+    scopes: Prisma.InputJsonValue
     campusId: string
   }> {
     const records = Array.isArray(input) ? (input as CourseItem[]) : []

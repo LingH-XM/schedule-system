@@ -100,10 +100,9 @@ type AdminBaseSnapshot = {
 }
 
 const steps: RuleStep[] = [
-  { id: 'course-default', label: '默认规则' },
   { id: 'course-common', label: '课程规则' },
   { id: 'teacher-rules', label: '教师规则' },
-  { id: 'course-weight', label: '权重分配' }
+  { id: 'advanced', label: '高级设置' }
 ]
 
 const commonRuleCards: CommonRuleGuide[] = [
@@ -620,6 +619,11 @@ const courseDefaultRows: Array<{ key: CourseDefaultRuleKey; label: string; optio
     key: 'distribution',
     label: '课程周分布',
     options: ['尽量分散到不同天', '尽量集中在较少天', '优先安排在周中', '无特殊要求']
+  },
+  {
+    key: 'differentDayPeriod',
+    label: '不同天节次分散',
+    options: ['尽量不同节次', '无特殊要求']
   },
   { key: 'noCrossNoon', label: '教师午间连上', options: ['不能让老师在上午末节和下午首节连上', '可允许上午末节和下午首节连上'] },
   { key: 'sameClassNoConsecutive', label: '同课程连堂', options: ['优先不连堂', '无特殊要求'] },
@@ -2810,9 +2814,12 @@ const commonRuleStepIds = new Set([
   'course-relation'
 ])
 const teacherRuleStepIds = new Set(['teacher-ban', 'teacher-hours', 'teacher-mutual'])
+const advancedRuleStepIds = new Set(['course-default', 'course-weight'])
+const isAdvancedRuleStep = computed(() => advancedRuleStepIds.has(activeStep.value))
 const menuActiveStep = computed(() => {
   if (commonRuleStepIds.has(activeStep.value)) return 'course-common'
   if (teacherRuleStepIds.has(activeStep.value)) return 'teacher-rules'
+  if (advancedRuleStepIds.has(activeStep.value)) return 'advanced'
   return activeStep.value
 })
 
@@ -3470,6 +3477,17 @@ function openRuleSection(stepId: string): void {
     switchCommonRuleTab('course-common')
     return
   }
+  if (stepId === 'advanced') {
+    if (!advancedRuleStepIds.has(activeStep.value)) {
+      activeStep.value = 'course-default'
+    }
+    return
+  }
+  activeStep.value = stepId
+}
+
+function openAdvancedRuleStep(stepId: string): void {
+  if (!advancedRuleStepIds.has(stepId)) return
   activeStep.value = stepId
 }
 
@@ -3507,7 +3525,7 @@ watch(
     <header class="rule-module-head">
       <div>
         <h1>排课规则设置</h1>
-        <p>统一管理默认规则、课程规则、教师规则和权重配置。</p>
+        <p>统一管理课程规则、教师规则和高级设置。</p>
       </div>
     </header>
 
@@ -3529,6 +3547,33 @@ watch(
     </nav>
 
     <section class="rule-content">
+      <section v-if="isAdvancedRuleStep" class="advanced-settings-nav" aria-label="高级设置分类">
+        <div class="advanced-settings-intro">
+          <strong>高级设置</strong>
+          <span>默认规则和权重会直接影响智能排课结果，建议仅由管理员统一维护。</span>
+        </div>
+        <div class="advanced-settings-tabs" role="tablist" aria-label="高级设置选项">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeStep === 'course-default'"
+            :class="['el-advanced-settings-tab', 'advanced-settings-tab', { active: activeStep === 'course-default' }]"
+            @click="openAdvancedRuleStep('course-default')"
+          >
+            默认规则
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeStep === 'course-weight'"
+            :class="['el-advanced-settings-tab', 'advanced-settings-tab', { active: activeStep === 'course-weight' }]"
+            @click="openAdvancedRuleStep('course-weight')"
+          >
+            权重分配
+          </button>
+        </div>
+      </section>
+
       <div v-if="showCommonRuleTabs" class="common-rule-tabs-wrap">
         <el-tabs
           :model-value="activeCommonRuleTab"

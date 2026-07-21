@@ -16,6 +16,7 @@ import {
   type ClassHourClassRow,
   type ClassHourRow
 } from '../../services/basicDataRepository'
+import { getCurrentUser } from '../../services/auth'
 
 const router = useRouter()
 
@@ -235,7 +236,9 @@ function submitDialog(): void {
       name,
       mode: form.mode,
       progress: 0,
-      favorite: false
+      favorite: false,
+      ownerUserId: getCurrentUser()?.userId,
+      scopes: getCurrentUser()?.scopes ?? []
     })
     closeDialog()
     return

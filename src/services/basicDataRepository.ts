@@ -1,4 +1,5 @@
 import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { authHeaders } from './auth'
 
 export type Campus = {
   id: string
@@ -215,7 +216,7 @@ export const basicDataApiRepository: BasicDataRepository = {
   async load() {
     const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
     try {
-      const response = await fetch(endpoint, { method: 'GET' })
+      const response = await fetch(endpoint, { method: 'GET', headers: authHeaders() })
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
@@ -240,9 +241,7 @@ export const basicDataApiRepository: BasicDataRepository = {
     const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
     const response = await fetch(endpoint, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(enriched)
     })
     if (!response.ok) {

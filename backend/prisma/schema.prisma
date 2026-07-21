@@ -9,34 +9,55 @@ datasource db {
 
 model Account {
   id           String   @id @default(cuid())
-  accountId    String   @unique
+  schoolId     String   @unique @map("accountId")
   name         String
   deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lastActiveAt DateTime @default(now())
+  users        User[]
 }
 
 model User {
   id           String   @id @default(cuid())
-  accountId    String
+  schoolId     String   @map("accountId")
   username     String   @unique
   phone        String?  @unique
   passwordHash String
   name         String
-  role         String
+  role         String   @default("school_admin")
+  permissions  Json     @default("[]")
+  mustChangePassword Boolean @default(true)
+  createdByUserId String?
   isActive     Boolean  @default(true)
   deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lastLoginAt  DateTime?
+  school       Account  @relation(fields: [schoolId], references: [schoolId], onDelete: Restrict)
+  scopes       UserScope[]
+  createdBy    User?    @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdUsers User[]   @relation("UserCreator")
 
-  @@index([accountId])
+  @@index([schoolId])
+  @@index([createdByUserId])
+}
+
+model UserScope {
+  id       String @id @default(cuid())
+  userId   String
+  campusId String @default("*")
+  grade    String @default("*")
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, campusId, grade])
+  @@index([userId])
+  @@index([campusId, grade])
 }
 
 model Snapshot {
   id        String   @id @default(cuid())
-  accountId String   @default("default")
+  schoolId  String   @default("default") @map("accountId")
   profile   String
   planId    String
   resource  String
@@ -45,13 +66,13 @@ model Snapshot {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([accountId, profile, planId, resource])
-  @@index([accountId, profile, resource])
+  @@unique([schoolId, profile, planId, resource])
+  @@index([schoolId, profile, resource])
 }
 
 model Teacher {
   pk                  String               @id @default(cuid())
-  accountId           String               @default("default")
+  schoolId            String               @default("default") @map("accountId")
   profile             String
   planId              String
   teacherId           String
@@ -64,14 +85,14 @@ model Teacher {
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([accountId, profile, planId, teacherId])
-  @@index([accountId, profile, planId, campusId])
-  @@index([accountId, profile, planId, name])
+  @@unique([schoolId, profile, planId, teacherId])
+  @@index([schoolId, profile, planId, campusId])
+  @@index([schoolId, profile, planId, name])
 }
 
 model Course {
   pk                  String               @id @default(cuid())
-  accountId           String               @default("default")
+  schoolId            String               @default("default") @map("accountId")
   profile             String
   planId              String
   courseId            String
@@ -84,13 +105,13 @@ model Course {
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([accountId, profile, planId, courseId])
-  @@index([accountId, profile, planId, subject])
+  @@unique([schoolId, profile, planId, courseId])
+  @@index([schoolId, profile, planId, subject])
 }
 
 model SchoolClass {
   pk                  String               @id @default(cuid())
-  accountId           String               @default("default")
+  schoolId            String               @default("default") @map("accountId")
   profile             String
   planId              String
   classId             String
@@ -103,14 +124,14 @@ model SchoolClass {
   updatedAt           DateTime             @updatedAt
   teachingAssignments TeachingAssignment[]
 
-  @@unique([accountId, profile, planId, classId])
-  @@index([accountId, profile, planId, campusId, grade])
-  @@index([accountId, profile, planId, className])
+  @@unique([schoolId, profile, planId, classId])
+  @@index([schoolId, profile, planId, campusId, grade])
+  @@index([schoolId, profile, planId, className])
 }
 
 model TeachingAssignment {
   pk            String      @id @default(cuid())
-  accountId     String      @default("default")
+  schoolId      String      @default("default") @map("accountId")
   profile       String
   planId        String
   assignmentId  String
@@ -122,12 +143,12 @@ model TeachingAssignment {
   courseId      String
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-  class         SchoolClass @relation(fields: [accountId, profile, planId, classId], references: [accountId, profile, planId, classId], onDelete: Cascade)
-  course        Course      @relation(fields: [accountId, profile, planId, courseId], references: [accountId, profile, planId, courseId], onDelete: Cascade)
-  teacher       Teacher     @relation(fields: [accountId, profile, planId, teacherId], references: [accountId, profile, planId, teacherId], onDelete: Cascade)
+  class         SchoolClass @relation(fields: [schoolId, profile, planId, classId], references: [schoolId, profile, planId, classId], onDelete: Cascade)
+  course        Course      @relation(fields: [schoolId, profile, planId, courseId], references: [schoolId, profile, planId, courseId], onDelete: Cascade)
+  teacher       Teacher     @relation(fields: [schoolId, profile, planId, teacherId], references: [schoolId, profile, planId, teacherId], onDelete: Cascade)
 
-  @@unique([accountId, profile, planId, assignmentId])
-  @@index([accountId, profile, planId, classId])
-  @@index([accountId, profile, planId, teacherId])
-  @@index([accountId, profile, planId, courseId])
+  @@unique([schoolId, profile, planId, assignmentId])
+  @@index([schoolId, profile, planId, classId])
+  @@index([schoolId, profile, planId, teacherId])
+  @@index([schoolId, profile, planId, courseId])
 }

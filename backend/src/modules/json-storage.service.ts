@@ -2,8 +2,9 @@ import { Inject, Injectable } from '@nestjs/common'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Prisma } from '@prisma/client'
 import type { DataProfile, DataResource } from './types.js'
-import { DEFAULT_ACCOUNT_ID } from './types.js'
+import { DEFAULT_SCHOOL_ID } from './types.js'
 import { PrismaService } from './prisma.service.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -17,19 +18,19 @@ export class JsonStorageService {
 
   constructor(@Inject(PrismaService) private readonly prismaService: PrismaService) {}
 
-  private buildPath(accountId: string, profile: DataProfile, planId: string, resource: DataResource): string {
-    return path.join(this.dataRoot, accountId || DEFAULT_ACCOUNT_ID, profile, `${planId}.${resource}.json`)
+  private buildPath(schoolId: string, profile: DataProfile, planId: string, resource: DataResource): string {
+    return path.join(this.dataRoot, schoolId || DEFAULT_SCHOOL_ID, profile, `${planId}.${resource}.json`)
   }
 
   private buildLegacyPath(profile: DataProfile, planId: string, resource: DataResource): string {
     return path.join(this.dataRoot, profile, `${planId}.${resource}.json`)
   }
 
-  async read(accountId: string, profile: DataProfile, planId: string, resource: DataResource): Promise<Record<string, unknown>> {
-    const dbPayload = await this.readFromDb(accountId, profile, planId, resource)
+  async read(schoolId: string, profile: DataProfile, planId: string, resource: DataResource): Promise<Record<string, unknown>> {
+    const dbPayload = await this.readFromDb(schoolId, profile, planId, resource)
     if (dbPayload) return dbPayload
 
-    const file = this.buildPath(accountId, profile, planId, resource)
+    const file = this.buildPath(schoolId, profile, planId, resource)
     try {
       const raw = await fs.readFile(file, 'utf-8')
       const parsed = JSON.parse(raw)
@@ -37,7 +38,7 @@ export class JsonStorageService {
     } catch (error) {
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : ''
       if (code === 'ENOENT') {
-        if (accountId === DEFAULT_ACCOUNT_ID) {
+        if (schoolId === DEFAULT_SCHOOL_ID) {
           try {
             const legacyRaw = await fs.readFile(this.buildLegacyPath(profile, planId, resource), 'utf-8')
             const legacyParsed = JSON.parse(legacyRaw)
@@ -57,17 +58,17 @@ export class JsonStorageService {
     }
   }
 
-  async write(accountId: string, profile: DataProfile, planId: string, resource: DataResource, payload: Record<string, unknown>): Promise<void> {
-    const wroteDb = await this.writeToDb(accountId, profile, planId, resource, payload)
+  async write(schoolId: string, profile: DataProfile, planId: string, resource: DataResource, payload: Record<string, unknown>): Promise<void> {
+    const wroteDb = await this.writeToDb(schoolId, profile, planId, resource, payload)
     if (wroteDb) return
 
-    const file = this.buildPath(accountId, profile, planId, resource)
+    const file = this.buildPath(schoolId, profile, planId, resource)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, JSON.stringify(payload, null, 2), 'utf-8')
   }
 
   private async readFromDb(
-    accountId: string,
+    schoolId: string,
     profile: DataProfile,
     planId: string,
     resource: DataResource
@@ -78,7 +79,7 @@ export class JsonStorageService {
 
     try {
       const row = await prisma.snapshot.findUnique({
-        where: { accountId_profile_planId_resource: { accountId, profile, planId, resource } },
+        where: { schoolId_profile_planId_resource: { schoolId, profile, planId, resource } },
         select: { payload: true }
       })
       if (!row) return null
@@ -93,7 +94,7 @@ export class JsonStorageService {
   }
 
   private async writeToDb(
-    accountId: string,
+    schoolId: string,
     profile: DataProfile,
     planId: string,
     resource: DataResource,
@@ -106,15 +107,15 @@ export class JsonStorageService {
     try {
       if (prisma.account?.upsert) {
         await prisma.account.upsert({
-          where: { accountId },
+          where: { schoolId },
           update: { lastActiveAt: new Date() },
-          create: { accountId, name: accountId, lastActiveAt: new Date() }
+          create: { schoolId, name: schoolId, lastActiveAt: new Date() }
         })
       }
       await prisma.snapshot.upsert({
-        where: { accountId_profile_planId_resource: { accountId, profile, planId, resource } },
-        update: { payload, savedAt: this.toSavedAtDate(payload) },
-        create: { accountId, profile, planId, resource, payload, savedAt: this.toSavedAtDate(payload) }
+        where: { schoolId_profile_planId_resource: { schoolId, profile, planId, resource } },
+        update: { payload: payload as Prisma.InputJsonValue, savedAt: this.toSavedAtDate(payload) },
+        create: { schoolId, profile, planId, resource, payload: payload as Prisma.InputJsonValue, savedAt: this.toSavedAtDate(payload) }
       })
       return true
     } catch (error) {

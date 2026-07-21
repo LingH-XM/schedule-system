@@ -624,16 +624,16 @@ onBeforeUnmount(() => {
 }
 
 .help-back-link:hover {
-  color: #409eff;
+  color: var(--primary);
 }
 
 .help-center {
-  --guide-text: #172642;
-  --guide-body: #4f5d72;
-  --guide-muted: #7d899d;
-  --guide-line: #e5e9f0;
-  --guide-soft: #f7f8fa;
-  --guide-blue: #409eff;
+  --guide-text: #24324a;
+  --guide-body: #465773;
+  --guide-muted: #5f6f8a;
+  --guide-line: #d9e2f0;
+  --guide-soft: #f4f7fb;
+  --guide-blue: #3f6fbf;
   min-height: calc(100vh - 64px);
   overflow: visible;
   background: #fff;

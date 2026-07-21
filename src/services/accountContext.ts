@@ -1,4 +1,4 @@
-import { getCurrentAccountId } from './auth'
+import { getCurrentSchoolId, getCurrentUser } from './auth'
 
 const DEFAULT_ACCOUNT_ID = 'default'
 
@@ -8,15 +8,21 @@ function sanitizeAccountId(raw: string): string {
   return cleaned || DEFAULT_ACCOUNT_ID
 }
 
-export function currentAccountId(): string {
-  return sanitizeAccountId(getCurrentAccountId())
+export function currentSchoolId(): string {
+  return sanitizeAccountId(getCurrentSchoolId())
 }
 
 export function withAccountStorageKey(baseKey: string): string {
-  return `${baseKey}:${currentAccountId()}`
+  const user = getCurrentUser()
+  const schoolKey = currentSchoolId()
+  if (!user || user.role === 'super_admin' || user.role === 'school_admin') return `${baseKey}:${schoolKey}`
+  return `${baseKey}:${schoolKey}:${sanitizeAccountId(user.userId)}`
 }
 
-export function withAccountQuery(path: string): string {
+export function withSchoolQuery(path: string): string {
   const separator = path.includes('?') ? '&' : '?'
-  return `${path}${separator}accountId=${encodeURIComponent(currentAccountId())}`
+  return `${path}${separator}schoolId=${encodeURIComponent(currentSchoolId())}`
 }
+
+/** @deprecated The server derives schoolId from the signed login token. */
+export const withAccountQuery = withSchoolQuery

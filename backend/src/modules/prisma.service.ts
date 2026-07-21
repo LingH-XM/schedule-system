@@ -2,54 +2,9 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { PrismaClient } from '@prisma/client'
 
-type PrismaLikeClient = {
-  snapshot: {
-    findUnique: (args: unknown) => Promise<{ payload: unknown } | null>
-    upsert: (args: unknown) => Promise<unknown>
-    deleteMany?: (args: unknown) => Promise<unknown>
-    updateMany?: (args: unknown) => Promise<unknown>
-  }
-  account?: {
-    findUnique?: (args: unknown) => Promise<unknown>
-    findMany?: (args: unknown) => Promise<unknown>
-    create?: (args: unknown) => Promise<unknown>
-    update?: (args: unknown) => Promise<unknown>
-    upsert: (args: unknown) => Promise<unknown>
-    delete?: (args: unknown) => Promise<unknown>
-  }
-  user?: {
-    findUnique: (args: unknown) => Promise<unknown>
-    findFirst?: (args: unknown) => Promise<unknown>
-    findMany?: (args: unknown) => Promise<unknown>
-    upsert: (args: unknown) => Promise<unknown>
-    create?: (args: unknown) => Promise<unknown>
-    update: (args: unknown) => Promise<unknown>
-    delete?: (args: unknown) => Promise<unknown>
-  }
-  teacher: {
-    deleteMany: (args: unknown) => Promise<unknown>
-    createMany: (args: unknown) => Promise<unknown>
-    updateMany?: (args: unknown) => Promise<unknown>
-  }
-  course: {
-    deleteMany: (args: unknown) => Promise<unknown>
-    createMany: (args: unknown) => Promise<unknown>
-    updateMany?: (args: unknown) => Promise<unknown>
-  }
-  schoolClass: {
-    deleteMany: (args: unknown) => Promise<unknown>
-    createMany: (args: unknown) => Promise<unknown>
-    updateMany?: (args: unknown) => Promise<unknown>
-  }
-  teachingAssignment: {
-    deleteMany: (args: unknown) => Promise<unknown>
-    createMany: (args: unknown) => Promise<unknown>
-    updateMany?: (args: unknown) => Promise<unknown>
-  }
-  $transaction: (arg: unknown[]) => Promise<unknown[]>
-  $disconnect: () => Promise<void>
-}
+type PrismaLikeClient = PrismaClient
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)

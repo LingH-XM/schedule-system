@@ -1,4 +1,5 @@
 import { withAccountQuery } from './accountContext'
+import { authHeaders } from './auth'
 
 export type ApiSolverLesson = {
   assignmentKey: string
@@ -57,6 +58,11 @@ export type ApiSmartSolveRequest = {
       secondary: string
     }
     distribution?: {
+      enabled: boolean
+      main: string
+      secondary: string
+    }
+    differentDayPeriod?: {
       enabled: boolean
       main: string
       secondary: string
@@ -214,7 +220,7 @@ export async function solveSmartByApi(
 ): Promise<ApiSmartSolveEnvelope> {
   const response = await fetch(withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart`)), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
   })
   if (!response.ok) {
@@ -249,7 +255,7 @@ export async function solveSmartByApi(
     await sleep(1000)
     const statusResponse = await fetch(
       withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart/${encodeURIComponent(job.id)}`)),
-      { method: 'GET' }
+      { method: 'GET', headers: authHeaders() }
     )
     if (!statusResponse.ok) throw await readApiError(statusResponse)
     const statusPayload = (await statusResponse.json()) as { ok?: boolean; job?: ApiSmartQueueJob }

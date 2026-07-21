@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { CircleCheckFilled, Lock, Unlock } from '@element-plus/icons-vue'
+import { CircleCheckFilled, Lock, RefreshLeft, RefreshRight, Unlock } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { notify } from '../../utils/notify'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
@@ -144,7 +144,13 @@ type WorkbenchLockDraft = {
   locks: Record<string, Record<string, boolean>>
 }
 
+type ScheduleHistoryEntry = {
+  label: string
+  scheduleMap: Record<string, Record<string, Lesson | null>>
+}
+
 type ClearScheduleScope = 'class' | 'grade'
+type CoursePoolLayoutMode = 'horizontal' | 'vertical'
 
 const route = useRoute()
 const planName = computed(() => (route.query.planName as string) || '默认方案')
@@ -185,8 +191,14 @@ const lastPublishedAt = ref(0)
 const publishDialogVisible = ref(false)
 const clearSchedulePopoverVisible = ref(false)
 const clearScheduleScope = ref<ClearScheduleScope>('class')
+const coursePoolLayoutMode = ref<CoursePoolLayoutMode>(
+  window.localStorage.getItem('schedule-workbench-pool-layout') === 'horizontal' ? 'horizontal' : 'vertical'
+)
 const workbenchPersistState = ref<WorkbenchPersistSnapshot>({ entries: {}, meta: {}, drafts: {}, logs: {} })
 const progressSyncing = ref(false)
+const undoHistory = ref<ScheduleHistoryEntry[]>([])
+const redoHistory = ref<ScheduleHistoryEntry[]>([])
+const SCHEDULE_HISTORY_LIMIT = 50
 let smartProgressTimer: ReturnType<typeof setInterval> | null = null
 let smartProgressStartAt = 0
 
@@ -462,6 +474,7 @@ function buildSmartRuleDetails(payload: ApiSmartSolveRequest, classIds: string[]
   const defaultRuleNameMap: Record<string, string> = {
     syncStart: '教案齐头',
     distribution: '分散方式',
+    differentDayPeriod: '不同天节次分散',
     noCrossNoon: '上下节连续',
     sameClassNoConsecutive: '同班无连堂课设置的课程',
     twoLessonsGap: '同一个班，周课时为2节的课程至少间隔一天'
@@ -820,6 +833,64 @@ function snapshotScheduleMap(): Record<string, Record<string, Lesson | null>> {
   return result
 }
 
+function scheduleSnapshotSignature(snapshot: Record<string, Record<string, Lesson | null>>): string {
+  return JSON.stringify(snapshot)
+}
+
+function restoreScheduleSnapshot(snapshot: Record<string, Record<string, Lesson | null>>): void {
+  classRecords.value.forEach((classInfo) => {
+    ensureClassGrid(classInfo.id)
+    const incoming = snapshot[classInfo.id] || {}
+    Object.keys(scheduleMap[classInfo.id]).forEach((slotKey) => {
+      scheduleMap[classInfo.id][slotKey] = incoming[slotKey] ? cloneLesson(incoming[slotKey]) : null
+    })
+  })
+  activePoolAssignmentKey.value = ''
+  dragging.value = null
+  writeLockDraft()
+}
+
+function commitScheduleHistory(
+  before: Record<string, Record<string, Lesson | null>>,
+  label: string
+): boolean {
+  const after = snapshotScheduleMap()
+  if (scheduleSnapshotSignature(before) === scheduleSnapshotSignature(after)) return false
+  undoHistory.value = [...undoHistory.value, { label, scheduleMap: before }].slice(-SCHEDULE_HISTORY_LIMIT)
+  redoHistory.value = []
+  return true
+}
+
+function undoScheduleChange(): void {
+  const entry = undoHistory.value.at(-1)
+  if (!entry) return
+  const current = snapshotScheduleMap()
+  undoHistory.value = undoHistory.value.slice(0, -1)
+  redoHistory.value = [...redoHistory.value, { label: entry.label, scheduleMap: current }].slice(-SCHEDULE_HISTORY_LIMIT)
+  restoreScheduleSnapshot(entry.scheduleMap)
+  notify.success(`已撤回：${entry.label}`)
+}
+
+function redoScheduleChange(): void {
+  const entry = redoHistory.value.at(-1)
+  if (!entry) return
+  const current = snapshotScheduleMap()
+  redoHistory.value = redoHistory.value.slice(0, -1)
+  undoHistory.value = [...undoHistory.value, { label: entry.label, scheduleMap: current }].slice(-SCHEDULE_HISTORY_LIMIT)
+  restoreScheduleSnapshot(entry.scheduleMap)
+  notify.success(`已重做：${entry.label}`)
+}
+
+const undoButtonTitle = computed(() => {
+  const entry = undoHistory.value.at(-1)
+  return entry ? `撤回：${entry.label}` : '暂无可撤回操作'
+})
+
+const redoButtonTitle = computed(() => {
+  const entry = redoHistory.value.at(-1)
+  return entry ? `重做：${entry.label}` : '暂无可重做操作'
+})
+
 function readSavedWorkbenchEntry(): SavedScheduleWorkbenchEntry | null {
   const entry = workbenchPersistState.value.entries?.[currentPlanId.value]
   if (!entry || typeof entry !== 'object') return null
@@ -1027,6 +1098,10 @@ watch(selectedCampus, () => {
 watch(selectedGrade, () => {
   ensureSelectionValid()
   activePoolAssignmentKey.value = ''
+})
+
+watch(coursePoolLayoutMode, (mode) => {
+  window.localStorage.setItem('schedule-workbench-pool-layout', mode)
 })
 
 watch(
@@ -1834,11 +1909,15 @@ function dropForbiddenLabel(period: number, day: string): string {
 }
 
 function onDropToCell(period: number, day: string): void {
+  const before = snapshotScheduleMap()
   const result = applyDropTarget(
     buildDropEvaluationContext((dragging.value as EngineDragPayload | null) ?? null, period, day)
   )
   if (!result.allowed && result.reason) {
     notify.warning(result.reason)
+  }
+  if (result.allowed) {
+    commitScheduleHistory(before, dragging.value?.source === 'grid' ? '移动课程' : '安排课程')
   }
 }
 
@@ -2161,14 +2240,19 @@ function buildDefaultRulesForSolver(
   const defaultConfig = snapshot.courseDefaultConfig
 
   const allRulesEnabled = Boolean(defaultConfig?.enabled) && options?.enableCourseDefault !== false
-  const ruleEnabled = defaultConfig?.ruleEnabled || {
+  const ruleEnabled = {
     syncStart: true,
     distribution: true,
+    differentDayPeriod: true,
     noCrossNoon: true,
     sameClassNoConsecutive: true,
-    twoLessonsGap: true
+    twoLessonsGap: true,
+    ...(defaultConfig?.ruleEnabled || {})
   }
-  const rules = defaultConfig?.rules || defaultCourseDefaultConfig.rules
+  const rules = {
+    ...defaultCourseDefaultConfig.rules,
+    ...(defaultConfig?.rules || {})
+  }
 
   const mainSecondaryRule = (snapshot.mainSecondaryRules || [])
     .filter((item) => item.campus === campusName && (item.grade === grade || item.grade === '全部年级'))
@@ -2226,6 +2310,11 @@ function buildDefaultRulesForSolver(
         enabled: allRulesEnabled && Boolean(ruleEnabled.distribution),
         main: rules.distribution.main,
         secondary: rules.distribution.secondary
+      },
+      differentDayPeriod: {
+        enabled: allRulesEnabled && Boolean(ruleEnabled.differentDayPeriod),
+        main: rules.differentDayPeriod.main,
+        secondary: rules.differentDayPeriod.secondary
       },
       noCrossNoon: {
         enabled: allRulesEnabled && Boolean(ruleEnabled.noCrossNoon),
@@ -2468,6 +2557,10 @@ function buildRelaxedPayload(base: ApiSmartSolveRequest): ApiSmartSolveRequest {
       enabled: false,
       syncStart: { ...(base.defaultRules?.syncStart || { enabled: false, main: '', secondary: '' }), enabled: false },
       distribution: { ...(base.defaultRules?.distribution || { enabled: false, main: '', secondary: '' }), enabled: false },
+      differentDayPeriod: {
+        ...(base.defaultRules?.differentDayPeriod || { enabled: false, main: '', secondary: '' }),
+        enabled: false
+      },
       noCrossNoon: { ...(base.defaultRules?.noCrossNoon || { enabled: false, main: '', secondary: '' }), enabled: false },
       sameClassNoConsecutive: {
         ...(base.defaultRules?.sameClassNoConsecutive || { enabled: false, main: '', secondary: '' }),
@@ -2539,6 +2632,7 @@ async function runSmartScheduling(): Promise<void> {
     return
   }
   classIds.forEach((classId) => ensureClassGrid(classId))
+  const historyBefore = snapshotScheduleMap()
 
   const enableOddEven = isFeatureRuleEnabled(getCurrentRuleWeightConfigForScope(), 'oddEven')
   const oddEvenIssues = enableOddEven
@@ -2691,8 +2785,10 @@ async function runSmartScheduling(): Promise<void> {
     })
     selectedSmartLogHistoryId.value = smartLogHistory.value[0]?.id || ''
   } finally {
+    commitScheduleHistory(historyBefore, '智能排课')
     await finishSmartProgress(solvedSuccess)
     smartSchedulingLoading.value = false
+    openSmartLogsDialog()
   }
 }
 
@@ -2714,7 +2810,9 @@ function clearCell(period: number, day: string): void {
     notify.warning('该课程已锁定，不能删除。')
     return
   }
+  const before = snapshotScheduleMap()
   currentGrid.value[key] = null
+  commitScheduleHistory(before, '删除课程')
 }
 
 function openLessonContextMenu(event: MouseEvent, period: number, day: string): void {
@@ -2757,7 +2855,9 @@ function lessonAtContextMenu(): Lesson | null {
 function toggleLessonLockFromMenu(): void {
   const lesson = lessonAtContextMenu()
   if (!lesson) return
+  const before = snapshotScheduleMap()
   lesson.locked = !lesson.locked
+  commitScheduleHistory(before, lesson.locked ? '锁定课程' : '解锁课程')
   writeLockDraft()
   notify.success(lesson.locked ? '已锁定该课程。' : '已解锁该课程。')
   closeLessonContextMenu()
@@ -2782,9 +2882,11 @@ async function deleteLessonFromMenu(): Promise<void> {
     closeLessonContextMenu()
     return
   }
+  const before = snapshotScheduleMap()
   if (lessonContextMenu.classId && lessonContextMenu.slotKey) {
     scheduleMap[lessonContextMenu.classId][lessonContextMenu.slotKey] = null
   }
+  commitScheduleHistory(before, '删除课程')
   closeLessonContextMenu()
 }
 
@@ -2953,6 +3055,7 @@ async function confirmClearSchedule(): Promise<void> {
     return
   }
 
+  const before = snapshotScheduleMap()
   let clearedCount = 0
   let lockedCount = 0
   let fixedCount = 0
@@ -2981,6 +3084,7 @@ async function confirmClearSchedule(): Promise<void> {
     notify.warning(`无可清空课程（锁定 ${lockedCount}，固定点 ${fixedCount}）。`)
     return
   }
+  commitScheduleHistory(before, isGradeScope ? '清空年级课表' : '清空班级课表')
   notify.success(`已清空${isGradeScope ? '当前年级' : '当前班级'} ${clearedCount} 节（保留锁定 ${lockedCount}，固定点 ${fixedCount}）。`)
 }
 
@@ -3011,6 +3115,7 @@ function toggleClassLock(classId: string): void {
     return
   }
 
+  const before = snapshotScheduleMap()
   const targetLocked = !classAllLocked(classId)
   entries.forEach(([slotKey, lesson]) => {
     if (!lesson) return
@@ -3019,6 +3124,7 @@ function toggleClassLock(classId: string): void {
       locked: targetLocked
     }
   })
+  commitScheduleHistory(before, targetLocked ? '锁定班级课程' : '解锁班级课程')
   writeLockDraft()
   const className = classLabelById(classId)
   notify.success(targetLocked ? `「${className}」课程已全部锁定。` : `「${className}」课程已全部解锁。`)
@@ -3045,6 +3151,7 @@ function toggleGradeLock(): void {
     return
   }
 
+  const before = snapshotScheduleMap()
   const targetLocked = !gradeAllLocked()
   withLessons.forEach((item) => {
     ensureClassGrid(item.id)
@@ -3056,6 +3163,7 @@ function toggleGradeLock(): void {
       }
     })
   })
+  commitScheduleHistory(before, targetLocked ? '锁定年级课程' : '解锁年级课程')
   writeLockDraft()
   notify.success(targetLocked ? '当前年级所有班级课程已全部锁定。' : '当前年级所有班级课程已全部解锁。')
 }
@@ -3124,6 +3232,30 @@ function toggleGradeLock(): void {
 
       <div class="workbench-actions">
         <span class="save-status-text">{{ saveStatusText }}</span>
+        <div class="schedule-history-actions" role="group" aria-label="排课历史操作">
+          <el-tooltip :content="undoButtonTitle" placement="bottom">
+            <el-button
+              class="schedule-history-button"
+              circle
+              :disabled="undoHistory.length === 0"
+              :aria-label="undoButtonTitle"
+              @click="undoScheduleChange"
+            >
+              <el-icon><RefreshLeft /></el-icon>
+            </el-button>
+          </el-tooltip>
+          <el-tooltip :content="redoButtonTitle" placement="bottom">
+            <el-button
+              class="schedule-history-button"
+              circle
+              :disabled="redoHistory.length === 0"
+              :aria-label="redoButtonTitle"
+              @click="redoScheduleChange"
+            >
+              <el-icon><RefreshRight /></el-icon>
+            </el-button>
+          </el-tooltip>
+        </div>
         <el-popover
           v-model:visible="clearSchedulePopoverVisible"
           placement="bottom-end"
@@ -3154,16 +3286,23 @@ function toggleGradeLock(): void {
             </div>
           </div>
         </el-popover>
-        <el-button :loading="smartSchedulingLoading" @click="runSmartScheduling">智能排课</el-button>
-        <el-button plain @click="openSmartLogsDialog">查看排课日志</el-button>
+        <el-button :loading="smartSchedulingLoading" :disabled="persistLoading" @click="runSmartScheduling">
+          智能排课
+        </el-button>
         <el-button :loading="persistLoading" @click="persistScheduleResult(false)">保存课表</el-button>
         <el-button type="primary" :loading="persistLoading" @click="openPublishDialog">生成课表</el-button>
       </div>
     </header>
 
-    <section class="workbench-main">
+    <section :class="['workbench-main', `is-pool-${coursePoolLayoutMode}`]">
       <aside class="course-pool">
-        <h3>待安排课程</h3>
+        <div class="course-pool-head">
+          <h3>待安排课程</h3>
+          <el-radio-group v-model="coursePoolLayoutMode" size="small" aria-label="待安排课程排列方式">
+            <el-radio-button value="horizontal">横向</el-radio-button>
+            <el-radio-button value="vertical">纵向</el-radio-button>
+          </el-radio-group>
+        </div>
         <div class="pool-list">
           <div
             v-for="course in coursePool"
@@ -3173,6 +3312,7 @@ function toggleGradeLock(): void {
               { 'is-empty': course.remaining <= 0, 'is-active': activePoolAssignmentKey === course.assignmentKey }
             ]"
             :style="{ background: course.color }"
+            :title="course.name"
             :draggable="course.remaining > 0"
             @click="setActivePoolCard(course.assignmentKey)"
             @dragstart="onDragFromPool(course.assignmentKey)"
@@ -3196,8 +3336,8 @@ function toggleGradeLock(): void {
           <span v-if="activeCourseLabel" class="board-active-tag">{{ activeCourseLabel }}</span>
         </div>
         <el-table :data="timetableRows" border class="workbench-el-table" :row-class-name="timetableRowClassName">
-          <el-table-column prop="period" label="节次" width="78" />
-          <el-table-column v-for="day in days" :key="day" :label="day" min-width="128">
+          <el-table-column prop="period" label="节" width="44" />
+          <el-table-column v-for="day in days" :key="day" :label="day" min-width="104">
             <template #default="{ row }">
               <div
                 :class="['drop-cell', dropCellClass(row.period, day)]"
@@ -3269,8 +3409,8 @@ function toggleGradeLock(): void {
           class="workbench-el-table"
           :row-class-name="timetableRowClassName"
         >
-          <el-table-column prop="period" label="节次" width="78" />
-          <el-table-column v-for="day in teacherDays" :key="`t-${day}`" :label="day" min-width="128">
+          <el-table-column prop="period" label="节" width="44" />
+          <el-table-column v-for="day in teacherDays" :key="`t-${day}`" :label="day" min-width="104">
             <template #default="{ row }">
               <div class="teacher-empty-cell">
                 <div

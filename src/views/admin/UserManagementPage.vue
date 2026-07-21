@@ -14,6 +14,9 @@ import {
   type ManagedUser
 } from '../../services/userManagementApi'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
+import { getCurrentUser } from '../../services/auth'
+import { basicDataRepository, type Campus } from '../../services/basicDataRepository'
+import type { AuthRole } from '../../types/auth'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -23,6 +26,10 @@ const phoneDialogVisible = ref(false)
 const editingUsername = ref('')
 const errorMessage = ref('')
 const users = ref<ManagedUser[]>([])
+const campuses = ref<Campus[]>([])
+const grades = ref<string[]>([])
+const currentUser = computed(() => getCurrentUser())
+const isSuperAdmin = computed(() => currentUser.value?.role === 'super_admin')
 const resettingPassword = ref(false)
 const deletingUsername = ref('')
 const passwordTargetUser = ref<ManagedUser | null>(null)
@@ -38,10 +45,13 @@ const tableWidth = ref(0)
 let tableResizeObserver: ResizeObserver | null = null
 
 const form = reactive({
-  accountId: '',
-  accountName: '',
+  schoolId: '',
+  schoolName: '',
+  name: '',
   phone: '',
-  role: 'admin' as 'super_admin' | 'admin'
+  role: 'grade_scheduler' as AuthRole,
+  campusIds: [] as string[],
+  grades: [] as string[]
 })
 
 const passwordForm = reactive({
@@ -51,37 +61,43 @@ const passwordForm = reactive({
 
 const columnWidths = computed(() => {
   const selection = 48
-  const action = 236
+  const action = 228
   const available = Math.max(tableWidth.value - selection - action, 0)
   const min = {
-    account: 176,
-    phone: 156,
-    role: 124,
-    status: 96,
-    lastLogin: 168,
-    createdAt: 168
+    account: 168,
+    phone: 146,
+    role: 114,
+    campus: 138,
+    grade: 108,
+    status: 90,
+    lastLogin: 152,
+    createdAt: 152
   }
-  const minTotal = min.account + min.phone + min.role + min.status + min.lastLogin + min.createdAt
+  const minTotal = min.account + min.phone + min.role + min.campus + min.grade + min.status + min.lastLogin + min.createdAt
   if (available <= minTotal) {
     return { selection, action, ...min }
   }
 
   const extra = available - minTotal
   const weights = {
-    account: 0.18,
-    phone: 0.14,
-    role: 0.1,
-    status: 0.06,
-    lastLogin: 0.26,
-    createdAt: 0.26
+    account: 0.16,
+    phone: 0.11,
+    role: 0.07,
+    campus: 0.12,
+    grade: 0.1,
+    status: 0.05,
+    lastLogin: 0.19,
+    createdAt: 0.2
   }
 
   const account = min.account + Math.round(extra * weights.account)
   const phone = min.phone + Math.round(extra * weights.phone)
   const role = min.role + Math.round(extra * weights.role)
+  const campus = min.campus + Math.round(extra * weights.campus)
+  const grade = min.grade + Math.round(extra * weights.grade)
   const status = min.status + Math.round(extra * weights.status)
   const lastLogin = min.lastLogin + Math.round(extra * weights.lastLogin)
-  const createdAt = available - account - phone - role - status - lastLogin
+  const createdAt = available - account - phone - role - campus - grade - status - lastLogin
 
   return {
     selection,
@@ -89,11 +105,33 @@ const columnWidths = computed(() => {
     account,
     phone,
     role,
+    campus,
+    grade,
     status,
     lastLogin,
     createdAt: Math.max(createdAt, min.createdAt)
   }
 })
+
+function formatScope(user: ManagedUser): { campuses: string; grades: string } {
+  if (user.role === 'super_admin' || user.role === 'school_admin') {
+    return { campuses: '全部校区', grades: '全部年级' }
+  }
+  const campusIds = [...new Set((user.scopes ?? []).map((scope) => scope.campusId))]
+  const gradeValues = [...new Set((user.scopes ?? []).map((scope) => scope.grade))]
+  const resolvedCampusNames = campusIds
+    .map((id) => campuses.value.find((campus) => campus.id === id)?.name)
+    .filter((name): name is string => Boolean(name))
+  const campusLabel = campusIds.includes('*')
+    ? '全部校区'
+    : resolvedCampusNames.length === campusIds.length
+      ? resolvedCampusNames.join('、')
+      : `指定校区（${campusIds.length || 1}个）`
+  return {
+    campuses: campusIds.length ? campusLabel : '全部校区',
+    grades: gradeValues.includes('*') || !gradeValues.length ? '全部年级' : gradeValues.join('、')
+  }
+}
 
 function syncTableWidth(): void {
   const nextWidth = tableWrapRef.value?.clientWidth ?? 0
@@ -149,7 +187,7 @@ function handleSelectionChange(selection: ManagedUser[]): void {
 
 function isRowSelectable(row: ManagedUser): boolean {
   if (activeView.value === 'active') {
-    return row.username !== 'admin'
+    return row.username !== 'admin' && row.userId !== currentUser.value?.userId
   }
   return true
 }
@@ -160,20 +198,26 @@ function getSelectedUsers(): ManagedUser[] {
 }
 
 function openCreateDialog(): void {
-  form.accountId = ''
-  form.accountName = ''
+  form.schoolId = currentUser.value?.schoolId ?? ''
+  form.schoolName = isSuperAdmin.value ? '' : currentUser.value?.schoolName ?? ''
+  form.name = ''
   form.phone = ''
-  form.role = 'admin'
+  form.role = isSuperAdmin.value ? 'school_admin' : 'grade_scheduler'
+  form.campusIds = []
+  form.grades = []
   errorMessage.value = ''
   editingUsername.value = ''
   dialogVisible.value = true
 }
 
 function openEditDialog(user: ManagedUser): void {
-  form.accountId = user.accountId
-  form.accountName = user.accountName
+  form.schoolId = user.schoolId
+  form.schoolName = user.schoolName
+  form.name = user.name
   form.phone = user.phone ?? ''
   form.role = user.role
+  form.campusIds = [...new Set(user.scopes.map((scope) => scope.campusId).filter((value) => value !== '*'))]
+  form.grades = [...new Set(user.scopes.map((scope) => scope.grade).filter((value) => value !== '*'))]
   errorMessage.value = ''
   editingUsername.value = user.username
   dialogVisible.value = true
@@ -218,10 +262,14 @@ async function submitPhoneBinding(): Promise<void> {
   try {
     const result = await updateManagedUser({
       currentUsername: user.username,
-      accountId: user.accountId,
-      accountName: user.accountName,
+      schoolId: user.schoolId,
+      schoolName: user.schoolName,
+      name: user.name,
       phone,
-      role: user.role
+      role: user.role,
+      permissions: user.permissions,
+      campusIds: [...new Set(user.scopes.map((scope) => scope.campusId))],
+      grades: [...new Set(user.scopes.map((scope) => scope.grade))]
     })
     if (!result.ok) {
       errorMessage.value = result.reason === 'PHONE_EXISTS' ? '该手机号已被其他账户绑定' : '绑定手机号失败'
@@ -237,18 +285,13 @@ async function submitPhoneBinding(): Promise<void> {
   }
 }
 
-function normalizeAccountId(raw: string): string {
-  return String(raw || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-}
-
 async function submitCreate(): Promise<void> {
-  const accountName = form.accountName.trim()
+  const name = form.name.trim()
+  const schoolName = form.schoolName.trim()
   const phone = form.phone.trim()
 
-  if (!accountName) {
-    errorMessage.value = '请填写名称'
+  if (!name || (isSuperAdmin.value && !schoolName)) {
+    errorMessage.value = isSuperAdmin.value ? '请填写学校名称和管理员姓名' : '请填写子账户使用人姓名'
     return
   }
 
@@ -258,21 +301,31 @@ async function submitCreate(): Promise<void> {
     if (editingUsername.value) {
       const result = await updateManagedUser({
         currentUsername: editingUsername.value,
-        accountId: normalizeAccountId(form.accountId),
-        accountName,
+        schoolId: form.schoolId,
+        schoolName,
+        name,
         phone,
-        role: form.role
+        role: form.role,
+        campusIds: form.campusIds,
+        grades: form.grades
       })
       if (!result.ok) {
         if (result.reason === 'PHONE_EXISTS') errorMessage.value = '手机号已被绑定'
         else if (result.reason === 'INVALID_PHONE') errorMessage.value = '请输入正确的 11 位中国大陆手机号'
-        else if (result.reason === 'ACCOUNT_ID_IMMUTABLE') errorMessage.value = '已有账户的标识暂不支持修改'
+        else if (result.reason === 'SCHOOL_ID_IMMUTABLE') errorMessage.value = '学校编号不允许修改'
         else if (result.reason === 'FORBIDDEN') errorMessage.value = '默认管理员角色不能降级'
         else errorMessage.value = '更新账户失败'
         return
       }
     } else {
-      const result = await createManagedUser({ accountName, phone, role: form.role })
+      const result = await createManagedUser({
+        name,
+        schoolName: isSuperAdmin.value ? schoolName : undefined,
+        phone,
+        role: form.role,
+        campusIds: form.campusIds,
+        grades: form.grades
+      })
       if (!result.ok) {
         if (result.reason === 'PHONE_EXISTS') errorMessage.value = '手机号已被绑定'
         else if (result.reason === 'INVALID_PHONE') errorMessage.value = '请输入正确的 11 位中国大陆手机号'
@@ -528,6 +581,10 @@ async function switchView(nextView: 'active' | 'trash'): Promise<void> {
 
 onMounted(() => {
   void loadUsers()
+  void Promise.resolve(basicDataRepository.load()).then((snapshot) => {
+    campuses.value = Array.isArray(snapshot?.campuses) ? snapshot.campuses : []
+    grades.value = [...new Set((snapshot?.classRecords ?? []).map((item) => item.grade).filter(Boolean))]
+  })
 })
 
 onBeforeUnmount(() => {
@@ -542,9 +599,11 @@ onBeforeUnmount(() => {
     <div class="user-management-head">
       <div>
         <h1>账户管理</h1>
-        <p>为不同账户创建独立的排课数据空间。每个账号对应一套独立基础数据、规则和排课结果。</p>
+        <p>{{ isSuperAdmin ? '管理学校和学校管理员账户。' : '新增子账户，并限定可管理的校区、年级和功能。' }}</p>
       </div>
-      <el-button v-if="activeView === 'active'" type="primary" @click="openCreateDialog">新增账号</el-button>
+      <el-button v-if="activeView === 'active'" type="primary" @click="openCreateDialog">
+        {{ isSuperAdmin ? '新增学校' : '新增子账户' }}
+      </el-button>
     </div>
 
     <div class="user-management-toolbar">
@@ -597,8 +656,8 @@ onBeforeUnmount(() => {
       <el-table-column label="账号信息" :width="columnWidths.account">
         <template #default="{ row }">
           <div class="account-summary-cell">
-            <div class="account-summary-title">{{ row.accountName }}</div>
-            <div class="account-summary-meta">{{ row.accountId }}</div>
+            <div class="account-summary-title">{{ isSuperAdmin ? row.schoolName : row.name }}</div>
+            <div class="account-summary-meta">{{ row.username }}</div>
           </div>
         </template>
       </el-table-column>
@@ -623,9 +682,19 @@ onBeforeUnmount(() => {
         <template #default="{ row }">
           <div class="account-role-cell">
             <el-tag :type="row.role === 'super_admin' ? 'danger' : 'primary'" effect="light" round>
-              {{ row.role === 'super_admin' ? '超级管理员' : '管理员' }}
+              {{ ({ super_admin: '超级管理员', school_admin: '学校管理员', grade_scheduler: '年级排课员', viewer: '查看账户' } as const)[row.role] }}
             </el-tag>
           </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="校区范围" :width="columnWidths.campus">
+        <template #default="{ row }">
+          <span class="account-scope-value">{{ formatScope(row).campuses }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="年级范围" :width="columnWidths.grade">
+        <template #default="{ row }">
+          <span class="account-scope-value">{{ formatScope(row).grades }}</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" :width="columnWidths.status">
@@ -655,7 +724,7 @@ onBeforeUnmount(() => {
         <template #default="{ row }">
           <div class="account-action-group">
             <template v-if="activeView === 'active'">
-              <el-button link type="primary" @click="openEditDialog(row)">编辑</el-button>
+              <el-button link type="primary" :disabled="row.userId === currentUser?.userId" @click="openEditDialog(row)">编辑</el-button>
               <el-button link type="primary" @click="toggleStatus(row)">
                 {{ row.isActive ? '停用' : '启用' }}
               </el-button>
@@ -680,27 +749,50 @@ onBeforeUnmount(() => {
       </el-table>
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingUsername ? '编辑账号' : '新增账号'" width="560px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editingUsername ? '编辑账号' : (isSuperAdmin ? '新增学校' : '新增子账户')"
+      width="560px"
+    >
       <el-form label-position="top" class="user-management-form">
         <div v-if="!editingUsername" class="user-management-static-tags">
           <el-tag effect="light" round>账号：系统自动生成</el-tag>
           <el-tag effect="light" round>初始密码：111111</el-tag>
         </div>
-        <el-form-item label="名称" required>
-          <el-input v-model="form.accountName" placeholder="例如：一校区" />
+        <el-form-item v-if="isSuperAdmin" label="学校名称" required>
+          <el-input v-model="form.schoolName" placeholder="例如：翔安区海滨小学" />
+        </el-form-item>
+        <el-form-item :label="isSuperAdmin ? '管理员姓名' : '使用人姓名'" required>
+          <el-input v-model="form.name" placeholder="请输入真实姓名" />
         </el-form-item>
         <el-form-item label="登录手机号">
           <el-input v-model="form.phone" maxlength="11" placeholder="可选，绑定后可用手机号登录" />
         </el-form-item>
-        <el-form-item v-if="editingUsername" label="账号">
-          <el-input :model-value="form.accountId" disabled />
+        <el-form-item v-if="editingUsername" label="学校编号">
+          <el-input :model-value="form.schoolId" disabled />
         </el-form-item>
         <el-form-item label="角色" required>
           <el-select v-model="form.role">
-            <el-option label="超级管理员" value="super_admin" />
-            <el-option label="管理员" value="admin" />
+            <el-option v-if="isSuperAdmin" label="学校管理员" value="school_admin" />
+            <template v-else>
+              <el-option label="年级排课员" value="grade_scheduler" />
+              <el-option label="查看账户" value="viewer" />
+            </template>
           </el-select>
         </el-form-item>
+        <template v-if="!isSuperAdmin">
+          <el-form-item label="可管理校区">
+            <el-select v-model="form.campusIds" multiple collapse-tags placeholder="不选表示全部校区">
+              <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="可管理年级">
+            <el-select v-model="form.grades" multiple collapse-tags placeholder="不选表示全部年级">
+              <el-option v-for="grade in grades" :key="grade" :label="grade" :value="grade" />
+            </el-select>
+          </el-form-item>
+          <p class="dialog-tip">年级排课员可编辑授权范围内数据；查看账户只能查看和导出。</p>
+        </template>
       </el-form>
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
       <template #footer>
@@ -719,7 +811,7 @@ onBeforeUnmount(() => {
     >
       <el-form label-position="top">
         <el-form-item label="账户">
-          <el-input :model-value="phoneTargetUser?.accountName ?? ''" disabled />
+          <el-input :model-value="phoneTargetUser?.name ?? phoneTargetUser?.schoolName ?? ''" disabled />
         </el-form-item>
         <el-form-item label="手机号" required>
           <el-input
