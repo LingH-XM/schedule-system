@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, ForbiddenException, Get, Inject,
 import { AuthGuard, requireAuth } from './auth.guard.js'
 import { hasPermission, hasScope, type AuthContext, type AuthenticatedRequest } from './auth.types.js'
 import { JsonStorageService } from './json-storage.service.js'
-import { normalizeProfile, sanitizePlanId } from './types.js'
+import { buildTermScopedPlanId, normalizeProfile, sanitizePlanId } from './types.js'
 
 @Controller()
 @UseGuards(AuthGuard)
@@ -13,12 +13,14 @@ export class ScheduleStateController {
   async getSchedulePlans(
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Query('planId') planIdParam?: string
+    @Query('planId') planIdParam?: string,
+    @Query('termId') termIdParam?: string
   ) {
     const auth = requireAuth(request)
     if (!hasPermission(auth, 'schedule.read')) throw new ForbiddenException('没有查看排课方案的权限')
     const profile = this.parseProfile(profileParam)
-    const planId = sanitizePlanId(planIdParam)
+    const termId = this.requireTermId(termIdParam)
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     const payload = await this.storage.read(auth.schoolId, profile, planId, 'schedule-plans')
     return this.filterPlans(auth, payload)
   }
@@ -28,12 +30,14 @@ export class ScheduleStateController {
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
     @Query('planId') planIdParam: string | undefined,
+    @Query('termId') termIdParam: string | undefined,
     @Body() body: unknown
   ) {
     const auth = requireAuth(request)
     if (!hasPermission(auth, 'schedule.edit')) throw new ForbiddenException('没有修改排课方案的权限')
     const profile = this.parseProfile(profileParam)
-    const planId = sanitizePlanId(planIdParam)
+    const termId = this.requireTermId(termIdParam)
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     const current = await this.storage.read(auth.schoolId, profile, planId, 'schedule-plans')
     return this.write(auth.schoolId, profile, planId, this.mergePlans(auth, current, body), 'schedule-plans')
   }
@@ -42,12 +46,14 @@ export class ScheduleStateController {
   async getWorkbenchState(
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Query('planId') planIdParam?: string
+    @Query('planId') planIdParam?: string,
+    @Query('termId') termIdParam?: string
   ) {
     const auth = requireAuth(request)
     if (!hasPermission(auth, 'schedule.read')) throw new ForbiddenException('没有查看排课工作台的权限')
     const profile = this.parseProfile(profileParam)
-    const planId = sanitizePlanId(planIdParam)
+    const termId = this.requireTermId(termIdParam)
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     const [payload, plans] = await Promise.all([
       this.storage.read(auth.schoolId, profile, planId, 'workbench-state'),
       this.storage.read(auth.schoolId, profile, planId, 'schedule-plans')
@@ -60,12 +66,14 @@ export class ScheduleStateController {
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
     @Query('planId') planIdParam: string | undefined,
+    @Query('termId') termIdParam: string | undefined,
     @Body() body: unknown
   ) {
     const auth = requireAuth(request)
     if (!hasPermission(auth, 'schedule.edit')) throw new ForbiddenException('没有修改排课工作台的权限')
     const profile = this.parseProfile(profileParam)
-    const planId = sanitizePlanId(planIdParam)
+    const termId = this.requireTermId(termIdParam)
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     const [current, plans] = await Promise.all([
       this.storage.read(auth.schoolId, profile, planId, 'workbench-state'),
       this.storage.read(auth.schoolId, profile, planId, 'schedule-plans')
@@ -78,6 +86,12 @@ export class ScheduleStateController {
       throw new BadRequestException('profile must be test or prod')
     }
     return normalizeProfile(profileParam)
+  }
+
+  private requireTermId(termIdParam: string | undefined): string {
+    const termId = String(termIdParam || '').trim()
+    if (!termId) throw new BadRequestException('termId is required')
+    return termId
   }
 
   private async write(

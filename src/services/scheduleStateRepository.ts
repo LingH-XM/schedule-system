@@ -38,8 +38,24 @@ const source = (import.meta.env.VITE_SCHEDULE_STATE_SOURCE ?? import.meta.env.VI
 const PLANS_API_PATH = `/api/${profile}/schedule-plans`
 const WORKBENCH_API_PATH = `/api/${profile}/workbench-state`
 
-function endpoint(path: string): string {
-  return withAccountQuery(`${apiBaseUrl}${path}?planId=${encodeURIComponent(planId)}`)
+function normalizeTermId(termId: string): string {
+  return String(termId || '').trim()
+}
+
+function requireTermId(termId: string): string {
+  const normalized = normalizeTermId(termId)
+  if (!normalized) throw new Error('当前学年学期尚未设置，无法读取或保存排课方案。')
+  return normalized
+}
+
+function scopedLocalKey(key: string, termId: string): string {
+  return withAccountStorageKey(`${key}:term:${encodeURIComponent(requireTermId(termId))}`)
+}
+
+function endpoint(path: string, termId: string): string {
+  return withAccountQuery(
+    `${apiBaseUrl}${path}?planId=${encodeURIComponent(planId)}&termId=${encodeURIComponent(requireTermId(termId))}`
+  )
 }
 
 function parsePlans(raw: string | null): SchedulePlan[] {
@@ -61,14 +77,14 @@ function plansSavedAt(plans: SchedulePlan[]): number {
   return maxIdTs
 }
 
-function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
+function parseWorkbenchLocal(termId: string): WorkbenchPersistSnapshot {
   let entries: Record<string, unknown> = {}
   let publishedEntries: Record<string, unknown> = {}
   let meta: Record<string, { savedAt: number; publishedAt: number }> = {}
   let drafts: Record<string, unknown> = {}
   let logs: Record<string, unknown[]> = {}
 
-  const entriesRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_PERSIST_KEY))
+  const entriesRaw = localStorage.getItem(scopedLocalKey(WORKBENCH_PERSIST_KEY, termId))
   if (entriesRaw) {
     try {
       const parsed = JSON.parse(entriesRaw) as Record<string, unknown>
@@ -78,7 +94,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const publishedEntriesRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_PUBLISHED_KEY))
+  const publishedEntriesRaw = localStorage.getItem(scopedLocalKey(WORKBENCH_PUBLISHED_KEY, termId))
   if (publishedEntriesRaw) {
     try {
       const parsed = JSON.parse(publishedEntriesRaw) as Record<string, unknown>
@@ -88,7 +104,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const metaRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_META_KEY))
+  const metaRaw = localStorage.getItem(scopedLocalKey(WORKBENCH_META_KEY, termId))
   if (metaRaw) {
     try {
       const parsed = JSON.parse(metaRaw) as Record<string, { savedAt?: number; publishedAt?: number }>
@@ -108,7 +124,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const draftsRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_DRAFTS_KEY))
+  const draftsRaw = localStorage.getItem(scopedLocalKey(WORKBENCH_DRAFTS_KEY, termId))
   if (draftsRaw) {
     try {
       const parsed = JSON.parse(draftsRaw) as Record<string, unknown>
@@ -118,7 +134,7 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
     }
   }
 
-  const logsRaw = localStorage.getItem(withAccountStorageKey(WORKBENCH_LOGS_KEY))
+  const logsRaw = localStorage.getItem(scopedLocalKey(WORKBENCH_LOGS_KEY, termId))
   if (logsRaw) {
     try {
       const parsed = JSON.parse(logsRaw) as Record<string, unknown>
@@ -146,31 +162,32 @@ function parseWorkbenchLocal(): WorkbenchPersistSnapshot {
   return { entries, publishedEntries, meta, drafts, logs, _savedAt: maxSavedAt }
 }
 
-function writeWorkbenchLocal(snapshot: WorkbenchPersistSnapshot): void {
-  localStorage.setItem(withAccountStorageKey(WORKBENCH_PERSIST_KEY), JSON.stringify(snapshot.entries || {}))
-  localStorage.setItem(withAccountStorageKey(WORKBENCH_PUBLISHED_KEY), JSON.stringify(snapshot.publishedEntries || {}))
-  localStorage.setItem(withAccountStorageKey(WORKBENCH_META_KEY), JSON.stringify(snapshot.meta || {}))
-  localStorage.setItem(withAccountStorageKey(WORKBENCH_DRAFTS_KEY), JSON.stringify(snapshot.drafts || {}))
-  localStorage.setItem(withAccountStorageKey(WORKBENCH_LOGS_KEY), JSON.stringify(snapshot.logs || {}))
+function writeWorkbenchLocal(snapshot: WorkbenchPersistSnapshot, termId: string): void {
+  localStorage.setItem(scopedLocalKey(WORKBENCH_PERSIST_KEY, termId), JSON.stringify(snapshot.entries || {}))
+  localStorage.setItem(scopedLocalKey(WORKBENCH_PUBLISHED_KEY, termId), JSON.stringify(snapshot.publishedEntries || {}))
+  localStorage.setItem(scopedLocalKey(WORKBENCH_META_KEY, termId), JSON.stringify(snapshot.meta || {}))
+  localStorage.setItem(scopedLocalKey(WORKBENCH_DRAFTS_KEY, termId), JSON.stringify(snapshot.drafts || {}))
+  localStorage.setItem(scopedLocalKey(WORKBENCH_LOGS_KEY, termId), JSON.stringify(snapshot.logs || {}))
 }
 
-export function loadSchedulePlansLocal(): SchedulePlan[] {
-  return parsePlans(localStorage.getItem(withAccountStorageKey(PLANS_LOCAL_KEY)))
+export function loadSchedulePlansLocal(termId: string): SchedulePlan[] {
+  return parsePlans(localStorage.getItem(scopedLocalKey(PLANS_LOCAL_KEY, termId)))
 }
 
-export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
-  const local = loadSchedulePlansLocal()
+export async function loadSchedulePlans(termId: string): Promise<SchedulePlan[]> {
+  const normalizedTermId = requireTermId(termId)
+  const local = loadSchedulePlansLocal(normalizedTermId)
   if (source !== 'api') return local
 
   try {
-    const response = await fetch(endpoint(PLANS_API_PATH), { method: 'GET', headers: authHeaders() })
+    const response = await fetch(endpoint(PLANS_API_PATH, normalizedTermId), { method: 'GET', headers: authHeaders() })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = (await response.json()) as { plans?: SchedulePlan[]; _savedAt?: number }
     const apiPlans = Array.isArray(payload?.plans) ? payload.plans : []
     const apiSavedAt = typeof payload?._savedAt === 'number' ? payload._savedAt : 0
     const localSavedAt = plansSavedAt(local)
     const latest = localSavedAt >= apiSavedAt ? local : apiPlans
-    localStorage.setItem(withAccountStorageKey(PLANS_LOCAL_KEY), JSON.stringify(latest))
+    localStorage.setItem(scopedLocalKey(PLANS_LOCAL_KEY, normalizedTermId), JSON.stringify(latest))
     return latest
   } catch (error) {
     console.warn('[ScheduleState] 读取排课方案失败，回退本地。', error)
@@ -178,15 +195,16 @@ export async function loadSchedulePlans(): Promise<SchedulePlan[]> {
   }
 }
 
-export function saveSchedulePlansLocal(plans: SchedulePlan[]): void {
-  localStorage.setItem(withAccountStorageKey(PLANS_LOCAL_KEY), JSON.stringify(plans))
+export function saveSchedulePlansLocal(plans: SchedulePlan[], termId: string): void {
+  localStorage.setItem(scopedLocalKey(PLANS_LOCAL_KEY, termId), JSON.stringify(plans))
 }
 
-export async function saveSchedulePlans(plans: SchedulePlan[]): Promise<void> {
-  saveSchedulePlansLocal(plans)
+export async function saveSchedulePlans(plans: SchedulePlan[], termId: string): Promise<void> {
+  const normalizedTermId = requireTermId(termId)
+  saveSchedulePlansLocal(plans, normalizedTermId)
   if (source !== 'api') return
   try {
-    await fetch(endpoint(PLANS_API_PATH), {
+    await fetch(endpoint(PLANS_API_PATH, normalizedTermId), {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ plans, _savedAt: Date.now() })
@@ -196,8 +214,9 @@ export async function saveSchedulePlans(plans: SchedulePlan[]): Promise<void> {
   }
 }
 
-export async function updateSchedulePlanProgress(planIdValue: string, progress: number): Promise<void> {
-  const plans = loadSchedulePlansLocal()
+export async function updateSchedulePlanProgress(planIdValue: string, progress: number, termId: string): Promise<void> {
+  const normalizedTermId = requireTermId(termId)
+  const plans = loadSchedulePlansLocal(normalizedTermId)
   if (!Array.isArray(plans) || plans.length <= 0) return
   let changed = false
   const next = plans.map((item) => {
@@ -208,15 +227,16 @@ export async function updateSchedulePlanProgress(planIdValue: string, progress: 
     return { ...item, progress: value }
   })
   if (!changed) return
-  await saveSchedulePlans(next)
+  await saveSchedulePlans(next, normalizedTermId)
 }
 
-export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSnapshot> {
-  const local = parseWorkbenchLocal()
+export async function loadWorkbenchPersistSnapshot(termId: string): Promise<WorkbenchPersistSnapshot> {
+  const normalizedTermId = requireTermId(termId)
+  const local = parseWorkbenchLocal(normalizedTermId)
   if (source !== 'api') return local
 
   try {
-    const response = await fetch(endpoint(WORKBENCH_API_PATH), { method: 'GET', headers: authHeaders() })
+    const response = await fetch(endpoint(WORKBENCH_API_PATH, normalizedTermId), { method: 'GET', headers: authHeaders() })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = (await response.json()) as Partial<WorkbenchPersistSnapshot>
     const apiState: WorkbenchPersistSnapshot = {
@@ -241,7 +261,7 @@ export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSn
     const localSavedAt = Number(local._savedAt || 0)
     const apiSavedAt = Number(apiState._savedAt || 0)
     const latest = localSavedAt >= apiSavedAt ? local : apiState
-    writeWorkbenchLocal(latest)
+    writeWorkbenchLocal(latest, normalizedTermId)
     return latest
   } catch (error) {
     console.warn('[ScheduleState] 读取工作台状态失败，回退本地。', error)
@@ -249,7 +269,8 @@ export async function loadWorkbenchPersistSnapshot(): Promise<WorkbenchPersistSn
   }
 }
 
-export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSnapshot): Promise<void> {
+export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSnapshot, termId: string): Promise<void> {
+  const normalizedTermId = requireTermId(termId)
   const payload: WorkbenchPersistSnapshot = {
     entries: snapshot.entries || {},
     publishedEntries: snapshot.publishedEntries || {},
@@ -258,10 +279,10 @@ export async function saveWorkbenchPersistSnapshot(snapshot: WorkbenchPersistSna
     logs: snapshot.logs || {},
     _savedAt: Date.now()
   }
-  writeWorkbenchLocal(payload)
+  writeWorkbenchLocal(payload, normalizedTermId)
   if (source !== 'api') return
   try {
-    await fetch(endpoint(WORKBENCH_API_PATH), {
+    await fetch(endpoint(WORKBENCH_API_PATH, normalizedTermId), {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload)
@@ -276,12 +297,16 @@ function cloneWorkbenchValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-export async function duplicateWorkbenchPlanState(sourcePlanId: string, targetPlanId: string): Promise<boolean> {
+export async function duplicateWorkbenchPlanState(
+  sourcePlanId: string,
+  targetPlanId: string,
+  termId: string
+): Promise<boolean> {
   const sourceId = String(sourcePlanId || '').trim()
   const targetId = String(targetPlanId || '').trim()
   if (!sourceId || !targetId || sourceId === targetId) return false
 
-  const snapshot = await loadWorkbenchPersistSnapshot()
+  const snapshot = await loadWorkbenchPersistSnapshot(termId)
   const sourceEntry = snapshot.entries?.[sourceId]
   const sourcePublishedEntry = snapshot.publishedEntries?.[sourceId]
   const sourceMeta = snapshot.meta?.[sourceId]
@@ -318,15 +343,15 @@ export async function duplicateWorkbenchPlanState(sourcePlanId: string, targetPl
   if (sourceDraft !== undefined) drafts[targetId] = cloneWorkbenchValue(sourceDraft)
   if (sourceLogs !== undefined) logs[targetId] = cloneWorkbenchValue(sourceLogs)
 
-  await saveWorkbenchPersistSnapshot({ entries, publishedEntries, meta, drafts, logs, _savedAt: now })
+  await saveWorkbenchPersistSnapshot({ entries, publishedEntries, meta, drafts, logs, _savedAt: now }, termId)
   return sourceScheduleEntry !== undefined
 }
 
-export async function deleteWorkbenchPlanState(planIdValue: string): Promise<boolean> {
+export async function deleteWorkbenchPlanState(planIdValue: string, termId: string): Promise<boolean> {
   const targetId = String(planIdValue || '').trim()
   if (!targetId) return false
 
-  const snapshot = await loadWorkbenchPersistSnapshot()
+  const snapshot = await loadWorkbenchPersistSnapshot(termId)
   const entries = { ...(snapshot.entries || {}) }
   const publishedEntries = { ...(snapshot.publishedEntries || {}) }
   const meta = { ...(snapshot.meta || {}) }
@@ -345,6 +370,9 @@ export async function deleteWorkbenchPlanState(planIdValue: string): Promise<boo
   delete meta[targetId]
   delete drafts[targetId]
   delete logs[targetId]
-  await saveWorkbenchPersistSnapshot({ entries, publishedEntries, meta, drafts, logs, _savedAt: Date.now() })
+  await saveWorkbenchPersistSnapshot(
+    { entries, publishedEntries, meta, drafts, logs, _savedAt: Date.now() },
+    termId
+  )
   return true
 }

@@ -67,7 +67,8 @@ export class AuthService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.ensureSeedAdmin()
-    await this.migrateLegacyChildUsernames()
+    await this.migrateLegacySchoolAdminRoles()
+    await this.migrateSchoolBoundChildUsernames()
   }
 
   async login(usernameRaw: string, passwordRaw: string) {
@@ -78,13 +79,11 @@ export class AuthService implements OnModuleInit {
     const prisma = await this.prismaService.getClient()
     if (!prisma?.user || !prisma.account?.upsert) return { ok: false, reason: 'UNAVAILABLE' } as LoginFailure
 
-    const legacyAlias = legacyChildUsernameAlias(username)
     const row = await prisma.user.findFirst({
       where: {
         deletedAt: null,
         OR: [
           { username },
-          ...(legacyAlias ? [{ username: legacyAlias }] : []),
           { phone: normalizePhone(username) || '__never_match__' }
         ]
       },
@@ -143,7 +142,9 @@ export class AuthService implements OnModuleInit {
 
     const rows = await prisma.user.findMany({
       where: {
-        ...(actor.role === 'school_admin' ? { schoolId: actor.schoolId } : {}),
+        ...(actor.role === 'super_admin'
+          ? { role: 'school_admin' }
+          : { schoolId: actor.schoolId, role: { in: ['grade_scheduler', 'viewer'] } }),
         ...(includeDeleted ? { deletedAt: { not: null } } : { deletedAt: null })
       },
       include: { school: { select: { name: true } }, scopes: true },
@@ -185,7 +186,7 @@ export class AuthService implements OnModuleInit {
     const permissions = normalizePermissions(role, input.permissions)
     const username = createsSchool
       ? await this.generateSchoolAdminUsername(schoolId)
-      : await this.generateChildUsername(schoolId)
+      : await this.generateChildUsername()
     try {
       const created = await prisma.user.create({
         data: {
@@ -381,9 +382,9 @@ export class AuthService implements OnModuleInit {
   }
 
   private canManage(actor: AuthContext, target: { id: string; schoolId: string; role: string }): boolean {
-    if (actor.role === 'super_admin') return true
+    if (actor.role === 'super_admin') return normalizeRole(target.role) === 'school_admin'
     if (actor.role !== 'school_admin' || target.schoolId !== actor.schoolId) return false
-    return !['super_admin', 'school_admin'].includes(normalizeRole(target.role)) || target.id === actor.userId
+    return ['grade_scheduler', 'viewer'].includes(normalizeRole(target.role))
   }
 
   private async findManageableUser(actor: AuthContext, username: string) {
@@ -462,20 +463,24 @@ export class AuthService implements OnModuleInit {
     })
   }
 
-  private async migrateLegacyChildUsernames(): Promise<void> {
+  private async migrateSchoolBoundChildUsernames(): Promise<void> {
     const prisma = await this.prismaService.getClient()
     if (!prisma?.user) return
-    const legacyUsers = await prisma.user.findMany({
+    const childUsers = await prisma.user.findMany({
       where: { role: { in: ['grade_scheduler', 'viewer'] } },
       select: { id: true, schoolId: true, username: true }
     })
-    for (const user of legacyUsers) {
-      const candidate = legacyChildUsernameAlias(user.username)
-      if (!candidate || candidate === user.username) continue
-      const conflict = await prisma.user.findUnique({ where: { username: candidate }, select: { id: true } })
-      if (conflict && conflict.id !== user.id) continue
+    for (const user of childUsers) {
+      if (!isSchoolBoundChildUsername(user.username, user.schoolId)) continue
+      const candidate = await this.generateChildUsername()
       await prisma.user.update({ where: { id: user.id }, data: { username: candidate } })
     }
+  }
+
+  private async migrateLegacySchoolAdminRoles(): Promise<void> {
+    const prisma = await this.prismaService.getClient()
+    if (!prisma?.user) return
+    await prisma.user.updateMany({ where: { role: 'admin' }, data: { role: 'school_admin' } })
   }
 
   private async generateSchoolAdminUsername(schoolId: string): Promise<string> {
@@ -488,14 +493,13 @@ export class AuthService implements OnModuleInit {
     return `${base}_${Date.now().toString().slice(-6)}`
   }
 
-  private async generateChildUsername(schoolId: string): Promise<string> {
+  private async generateChildUsername(): Promise<string> {
     const prisma = await this.prismaService.getClient()
-    const base = teacherUsernameBase(schoolId)
-    for (let suffix = 1; suffix < 10000; suffix += 1) {
-      const candidate = `${base}${String(suffix).padStart(2, '0')}`
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const candidate = `tch${randomDigits(8)}`
       if (!(await prisma?.user.findUnique({ where: { username: candidate }, select: { id: true } }))) return candidate
     }
-    return `${base}${Date.now().toString().slice(-6)}`
+    return `tch${Date.now().toString().slice(-8)}`
   }
 
   private async generateSchoolId(): Promise<string> {
@@ -508,20 +512,18 @@ export class AuthService implements OnModuleInit {
   }
 }
 
-function teacherUsernameBase(schoolId: string): string {
+function isSchoolBoundChildUsername(username: string, schoolId: string): boolean {
+  if (/^sch[a-zA-Z0-9]+_\d+$/i.test(String(username || ''))) return true
   const schoolToken = String(schoolId || '')
     .replace(/^sch/i, '')
     .replace(/[^a-zA-Z0-9]/g, '')
     .slice(0, 12)
-  return `tch${schoolToken || randomDigits(9)}`
+  if (!schoolToken) return false
+  return new RegExp(`^tch${escapeRegExp(schoolToken)}\\d{2,4}$`, 'i').test(String(username || ''))
 }
 
-function legacyChildUsernameAlias(username: string): string | null {
-  const match = String(username || '').match(/^sch([a-zA-Z0-9]+)_(\d+)$/i)
-  if (!match) return null
-  const legacySuffix = Number(match[2])
-  if (!Number.isFinite(legacySuffix) || legacySuffix < 2) return null
-  return `tch${match[1]}${String(legacySuffix - 1).padStart(2, '0')}`
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function normalizePermissions(role: AuthRole, raw: unknown): string[] {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { EditPen } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import {
   deleteWorkbenchPlanState,
@@ -36,6 +37,7 @@ const form = reactive<{ name: string; mode: PlanMode }>({
 const classHourRows = ref<ClassHourRow[]>([])
 const classHourClassRows = ref<ClassHourClassRow[]>([])
 const basicDataSnapshot = ref<Partial<BasicDataSnapshot> | null>(null)
+const currentTermId = ref('')
 
 const modeOptions: PlanMode[] = ['行政班排课']
 const sortedPlans = computed(() => [...plans.value].sort((a, b) => Number(b.favorite) - Number(a.favorite)))
@@ -86,7 +88,11 @@ function startProgressAnimation(): void {
 }
 
 async function loadPlans(): Promise<void> {
-  const loaded = await loadSchedulePlans()
+  if (!currentTermId.value) {
+    plans.value = []
+    return
+  }
+  const loaded = await loadSchedulePlans(currentTermId.value)
   if (!Array.isArray(loaded) || loaded.length <= 0) {
     plans.value = []
     return
@@ -97,7 +103,7 @@ async function loadPlans(): Promise<void> {
   }))
   if (isLegacyMockPlanSet(normalized)) {
     plans.value = []
-    void saveSchedulePlans([])
+    void saveSchedulePlans([], currentTermId.value)
     return
   }
   plans.value = normalized
@@ -107,21 +113,24 @@ watch(
   plans,
   (value) => {
     if (!plansReady.value) return
-    void saveSchedulePlans(value)
+    if (!currentTermId.value) return
+    void saveSchedulePlans(value, currentTermId.value)
   },
   { deep: true }
 )
 
 onMounted(() => {
-  void Promise.all([loadPlans(), basicDataRepository.load()]).then(([, basicData]) => {
+  void Promise.resolve(basicDataRepository.load()).then(async (basicData) => {
     const payload = basicData && typeof basicData === 'object' ? basicData : {}
     basicDataSnapshot.value = payload as Partial<BasicDataSnapshot>
+    currentTermId.value = String((payload as { selectedTerm?: unknown }).selectedTerm || '').trim()
     classHourRows.value = Array.isArray((payload as { classHourRows?: unknown[] }).classHourRows)
       ? ((payload as { classHourRows: ClassHourRow[] }).classHourRows || [])
       : []
     classHourClassRows.value = Array.isArray((payload as { classHourClassRows?: unknown[] }).classHourClassRows)
       ? ((payload as { classHourClassRows: ClassHourClassRow[] }).classHourClassRows || [])
       : []
+    await loadPlans()
     plansReady.value = true
     startProgressAnimation()
   })
@@ -185,6 +194,7 @@ const firstUnmetRequiredLabel = computed(() => {
   const hasHeadTeacher = classRecords.some((item) => Boolean(String(item.headTeacherId ?? '').trim()))
 
   const checks: RequiredCheckItem[] = [
+    { key: 'semester', label: '当前学年学期', isSet: Boolean(currentTermId.value) },
     { key: 'campus', label: '校区', isSet: campuses.length > 0 },
     { key: 'course-manage', label: '课程', isSet: courses.length > 0 },
     { key: 'class-setting', label: '班级', isSet: classRecords.length > 0 },
@@ -202,6 +212,10 @@ const firstUnmetRequiredLabel = computed(() => {
 const hasUnmetRequiredItems = computed(() => Boolean(firstUnmetRequiredLabel.value))
 
 function openCreateDialog(): void {
+  if (!currentTermId.value) {
+    ElMessage.warning('请先在基础数据中设置当前学年学期。')
+    return
+  }
   dialogType.value = 'create'
   editingId.value = ''
   form.name = ''
@@ -273,7 +287,7 @@ async function duplicatePlan(id: string): Promise<void> {
   if (!target) return
 
   const newPlanId = uid()
-  const copiedScheduleResult = await duplicateWorkbenchPlanState(target.id, newPlanId)
+  const copiedScheduleResult = await duplicateWorkbenchPlanState(target.id, newPlanId, currentTermId.value)
   plans.value.unshift({
     ...target,
     id: newPlanId,
@@ -301,7 +315,7 @@ async function deletePlan(id: string): Promise<void> {
   } catch {
     return
   }
-  await deleteWorkbenchPlanState(id)
+  await deleteWorkbenchPlanState(id, currentTermId.value)
   plans.value = plans.value.filter((plan) => plan.id !== id)
   ElMessage.success('排课方案及关联课表数据已删除。')
 }
@@ -364,7 +378,17 @@ function adjustSchedule(id: string): void {
       <article v-for="plan in sortedPlans" :key="plan.id" class="plan-card">
         <div class="plan-card-head">
           <h2>{{ plan.name }}</h2>
-          <el-button type="primary" link @click="openRenameDialog(plan)">重命名</el-button>
+          <el-tooltip content="重命名方案" placement="top">
+            <el-button
+              type="primary"
+              link
+              class="plan-rename-btn"
+              aria-label="重命名方案"
+              @click="openRenameDialog(plan)"
+            >
+              <el-icon><EditPen /></el-icon>
+            </el-button>
+          </el-tooltip>
         </div>
 
         <p>排课模式：{{ plan.mode }}</p>

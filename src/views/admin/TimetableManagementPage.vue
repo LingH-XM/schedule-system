@@ -26,6 +26,7 @@ import {
 } from '../../services/ruleSettings'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabel } from '../../utils/termLabel'
+import { compareGradeLabels } from '../../utils/gradeOrder'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 
 type LessonLike = {
@@ -95,22 +96,6 @@ const scheduleEntries = ref<Record<string, unknown>>({})
 const publishedAt = ref(0)
 
 const allDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
-const gradeOrderMap: Record<string, number> = {
-  一年级: 1,
-  二年级: 2,
-  三年级: 3,
-  四年级: 4,
-  五年级: 5,
-  六年级: 6,
-  七年级: 7,
-  八年级: 8,
-  九年级: 9
-}
-
-function compareGradeLabels(a: string, b: string): number {
-  return (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999) || a.localeCompare(b, 'zh-CN', { numeric: true })
-}
-
 function formatDateTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return '--'
   const d = new Date(ts)
@@ -221,6 +206,7 @@ const publishedPlanOptions = computed(() => {
     .filter((item) => item.publishedAt > 0)
     .sort((a, b) => b.publishedAt - a.publishedAt)
 })
+const hasPublishedTimetable = computed(() => publishedPlanOptions.value.length > 0)
 
 const classRows = computed(() => {
   return classRecords.value.filter((item) => {
@@ -1333,8 +1319,10 @@ async function hydrate(): Promise<void> {
   selectedTeacherId.value = teacherRows.value[0]?.id || ''
   selectedCourseId.value = courseRows.value[0]?.id || ''
 
-  schedulePlans.value = await loadSchedulePlans()
-  const workbench = await loadWorkbenchPersistSnapshot()
+  schedulePlans.value = selectedTerm.value ? await loadSchedulePlans(selectedTerm.value) : []
+  const workbench = selectedTerm.value
+    ? await loadWorkbenchPersistSnapshot(selectedTerm.value)
+    : { entries: {}, publishedEntries: {}, meta: {}, drafts: {}, logs: {} }
   workbenchPersistState.value = workbench
   scheduleEntries.value = {
     ...(workbenchPersistState.value.entries || {}),
@@ -1347,7 +1335,7 @@ async function hydrate(): Promise<void> {
   const latest = metaList[0]
   currentPlanId.value = latest?.id || 'default'
   publishedAt.value = latest?.publishedAt || 0
-  globalFixedPoints.value = (await hydrateRuleSettingsSnapshotFromApi()).globalFixedPoints || []
+  globalFixedPoints.value = (await hydrateRuleSettingsSnapshotFromApi(selectedTerm.value)).globalFixedPoints || []
   } finally {
     timetableReady.value = true
   }
@@ -1472,11 +1460,16 @@ watch(
         <el-tab-pane v-for="item in timetableTypes" :key="item" :label="item" :name="item" />
       </el-tabs>
       <div class="tm-actions">
-        <el-button type="primary" plain>打印课表</el-button>
-        <el-button type="primary" @click="exportDialogVisible = true">导出课表</el-button>
+        <el-button type="primary" plain :disabled="!hasPublishedTimetable">打印课表</el-button>
+        <el-button type="primary" :disabled="!hasPublishedTimetable" @click="exportDialogVisible = true">导出课表</el-button>
       </div>
     </header>
 
+    <div v-if="!hasPublishedTimetable" class="tm-empty-published">
+      <el-empty description="暂无课表发布" />
+    </div>
+
+    <template v-else>
     <div class="tm-filterbar">
       <el-select v-model="currentPlanId" filterable placeholder="选择排课方案" class="tm-filter-select">
         <el-option v-for="item in publishedPlanOptions" :key="item.id" :label="item.label" :value="item.id" />
@@ -1579,7 +1572,6 @@ watch(
             <el-radio value="vertical">竖版</el-radio>
           </el-radio-group>
         </div>
-        <p v-if="!publishedAt" class="tm-publish-tip">暂无已生成课表，请先在排课管理点击“生成课表”。</p>
         <el-table
           v-if="timetableType === '学校课表' && schoolLayout === 'horizontal'"
           :data="schoolRows"
@@ -1651,6 +1643,7 @@ watch(
         </el-table>
       </section>
     </section>
+    </template>
 
     <el-dialog v-model="exportDialogVisible" title="导出课表设置" width="620px" destroy-on-close>
       <div class="tm-option-group">

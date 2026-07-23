@@ -11,6 +11,7 @@ import TeacherHoursStatisticsPage from '../views/admin/TeacherHoursStatisticsPag
 import TimetableManagementPage from '../views/admin/TimetableManagementPage.vue'
 import HelpCenterPage from '../views/admin/HelpCenterPage.vue'
 import DesignShowcaseView from '../views/DesignShowcaseView.vue'
+import SchoolFeatureConfigPage from '../views/admin/SchoolFeatureConfigPage.vue'
 import { getCurrentUser, hasPermission, hasRequiredRole, isAuthenticated } from '../services/auth'
 import type { AuthRole } from '../types/auth'
 
@@ -33,6 +34,7 @@ const router = createRouter({
         { path: '', redirect: '/dashboard' },
         { path: 'dashboard', name: 'dashboard', component: DashboardPage },
         { path: 'users', name: 'userManagement', component: UserManagementPage, meta: { requiresAuth: true, role: 'school_admin' } },
+        { path: 'school-features', name: 'schoolFeatures', component: SchoolFeatureConfigPage, meta: { requiresAuth: true, role: 'super_admin' } },
         { path: 'basic-data', name: 'basicData', component: BasicDataPage, meta: { permission: 'basic_data.read' } },
         { path: 'rule-settings', name: 'ruleSettings', component: RuleSettingsPage, meta: { permission: 'rules.read' } },
         { path: 'schedules', name: 'schedules', component: SchedulesPage, meta: { permission: 'schedule.read' } },

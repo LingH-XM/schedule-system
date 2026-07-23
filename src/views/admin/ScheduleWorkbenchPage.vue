@@ -4,6 +4,7 @@ import { ElMessageBox } from 'element-plus'
 import { CircleCheckFilled, Lock, RefreshLeft, RefreshRight, Unlock } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { notify } from '../../utils/notify'
+import { compareGradeLabels } from '../../utils/gradeOrder'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 import {
   defaultCourseDefaultConfig,
@@ -136,6 +137,8 @@ type SavedScheduleWorkbenchEntry = {
   scheduleMap: Record<string, Record<string, Lesson | null>>
   savedAt: number
   publishedAt?: number
+  publishedScopes?: Record<string, number>
+  publishedScopeClassIds?: Record<string, string[]>
   version: number
 }
 
@@ -151,10 +154,12 @@ type ScheduleHistoryEntry = {
 
 type ClearScheduleScope = 'class' | 'grade'
 type CoursePoolLayoutMode = 'horizontal' | 'vertical'
+type PublishScope = 'grade' | 'all'
 
 const route = useRoute()
 const planName = computed(() => (route.query.planName as string) || '默认方案')
 const currentPlanId = computed(() => String(route.query.planId || 'default'))
+const currentTermId = ref('')
 
 const allDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const DEFAULT_DAILY_PERIODS = 8
@@ -189,6 +194,7 @@ const smartDetailCollapseActive = ref<string[]>([])
 const lastPersistedAt = ref(0)
 const lastPublishedAt = ref(0)
 const publishDialogVisible = ref(false)
+const publishScope = ref<PublishScope>('grade')
 const clearSchedulePopoverVisible = ref(false)
 const clearScheduleScope = ref<ClearScheduleScope>('class')
 const coursePoolLayoutMode = ref<CoursePoolLayoutMode>(
@@ -226,6 +232,16 @@ const publishTypeOptions = [
   { value: 'course', label: '课程课表', description: '按课程查看各班级的上课分布' },
   { value: 'school', label: '学校课表', description: '汇总校区、年级和班级的整体课表' }
 ]
+
+const currentPublishScopeLabel = computed(() => {
+  const campus = campusNameById(selectedCampus.value) || '当前校区'
+  const grade = selectedGrade.value || '当前年级'
+  return `${campus} / ${grade}`
+})
+
+const publishScopeHint = computed(() => publishScope.value === 'grade'
+  ? `仅更新「${currentPublishScopeLabel.value}」的已发布课表，其他年级保持原样。`
+  : '使用当前方案的完整排课结果，更新全部校区和年级。')
 
 function getCurrentRuleWeightConfigForScope(): RuleWeightConfig {
   const snapshot = ruleSettingsSnapshotRef.value
@@ -639,7 +655,7 @@ const gradeOptions = computed(() => {
   classRecords.value.forEach((item) => {
     if (item.campusId === selectedCampus.value) set.add(item.grade)
   })
-  return Array.from(set)
+  return Array.from(set).sort(compareGradeLabels)
 })
 
 const classTabs = computed(() =>
@@ -787,7 +803,7 @@ function saveWorkbenchMeta(planId: string, savedAt: number, publishedAt: number)
       [planId]: { savedAt, publishedAt }
     }
   }
-  void saveWorkbenchPersistSnapshot(workbenchPersistState.value)
+  if (currentTermId.value) void saveWorkbenchPersistSnapshot(workbenchPersistState.value, currentTermId.value)
 }
 
 function cloneLesson(lesson: Lesson | null): Lesson | null {
@@ -933,7 +949,7 @@ function writeLockDraft(): void {
       } satisfies WorkbenchLockDraft
     }
   }
-  void saveWorkbenchPersistSnapshot(workbenchPersistState.value)
+  if (currentTermId.value) void saveWorkbenchPersistSnapshot(workbenchPersistState.value, currentTermId.value)
 }
 
 function applyLockDraft(): void {
@@ -977,7 +993,7 @@ function writeSmartLogHistory(list: SmartSolveHistoryEntry[]): void {
       [currentPlanId.value]: list
     }
   }
-  void saveWorkbenchPersistSnapshot(workbenchPersistState.value)
+  if (currentTermId.value) void saveWorkbenchPersistSnapshot(workbenchPersistState.value, currentTermId.value)
 }
 
 function appendSmartLogHistory(entry: SmartSolveHistoryEntry): void {
@@ -1048,10 +1064,13 @@ function loadSnapshot(): void {
 
 async function hydrateBasicData(): Promise<void> {
   try {
-    workbenchPersistState.value = await loadWorkbenchPersistSnapshot()
     const loaded = basicDataRepository.load()
     const parsed = loaded instanceof Promise ? await loaded : loaded
     const safe = parsed && typeof parsed === 'object' ? parsed : {}
+    currentTermId.value = String((safe as { selectedTerm?: unknown }).selectedTerm || '').trim()
+    workbenchPersistState.value = currentTermId.value
+      ? await loadWorkbenchPersistSnapshot(currentTermId.value)
+      : { entries: {}, publishedEntries: {}, meta: {}, drafts: {}, logs: {} }
     campuses.value = Array.isArray((safe as { campuses?: unknown[] }).campuses)
       ? ((safe as { campuses: Campus[] }).campuses || [])
       : []
@@ -1081,6 +1100,9 @@ async function hydrateBasicData(): Promise<void> {
       typeof (safe as { arrangementScopes?: unknown }).arrangementScopes === 'object'
         ? ((safe as { arrangementScopes: Record<string, ArrangementScopeState> }).arrangementScopes || {})
         : {}
+    ruleSettingsSnapshotRef.value = await hydrateRuleSettingsSnapshotFromApi(
+      String((safe as { selectedTerm?: unknown }).selectedTerm || '').trim()
+    )
     ensureSelectionValid()
     loadSnapshot()
   } finally {
@@ -1459,13 +1481,13 @@ const schedulingProgress = computed(() => {
 })
 
 watch(
-  [schedulingProgress, () => route.query.planId],
+  [schedulingProgress, () => route.query.planId, currentTermId],
   () => {
     if (progressSyncing.value) return
     const planId = String(route.query.planId || '')
-    if (!planId) return
+    if (!planId || !currentTermId.value) return
     progressSyncing.value = true
-    void updateSchedulePlanProgress(planId, schedulingProgress.value).finally(() => {
+    void updateSchedulePlanProgress(planId, schedulingProgress.value, currentTermId.value).finally(() => {
       progressSyncing.value = false
     })
   },
@@ -2899,9 +2921,6 @@ function handleGlobalPointerDown(): void {
 }
 
 onMounted(() => {
-  void hydrateRuleSettingsSnapshotFromApi().then((snapshot) => {
-    ruleSettingsSnapshotRef.value = snapshot
-  })
   window.addEventListener('pointerdown', handleGlobalPointerDown)
   window.addEventListener('resize', closeLessonContextMenu)
   window.addEventListener('scroll', closeLessonContextMenu, true)
@@ -2933,22 +2952,40 @@ const saveStatusText = computed(() => {
   return '未保存'
 })
 
-function buildValidationReport(): { totalRequired: number; totalPlaced: number; totalRemaining: number; conflictCount: number } {
+function publishScopeKey(campusId: string, grade: string): string {
+  return `${campusId}::${grade}`
+}
+
+function classIdsForPublishScope(scope: PublishScope): string[] {
+  if (scope === 'all') return classRecords.value.map((item) => item.id).filter(Boolean)
+  return classRecords.value
+    .filter((item) => item.campusId === selectedCampus.value && item.grade === selectedGrade.value)
+    .map((item) => item.id)
+    .filter(Boolean)
+}
+
+function buildValidationReport(classIds = classRecords.value.map((item) => item.id)): { totalRequired: number; totalPlaced: number; totalRemaining: number; conflictCount: number } {
   classRecords.value.forEach((classItem) => ensureClassGrid(classItem.id))
   return buildValidationMetrics({
     arrangementScopes: arrangementScopes.value,
     scheduleMap: scheduleMap as unknown as Record<string, Record<string, EngineLesson | null>>,
-    classIds: classRecords.value.map((item) => item.id)
+    classIds
   })
 }
 
-async function persistScheduleResult(publish: boolean): Promise<void> {
+async function persistScheduleResult(publish: boolean, scope: PublishScope = 'all'): Promise<void> {
   if (persistLoading.value) return
-  const report = buildValidationReport()
+  const targetClassIds = publish ? classIdsForPublishScope(scope) : classRecords.value.map((item) => item.id)
+  if (publish && targetClassIds.length === 0) {
+    notify.warning(scope === 'grade' ? '当前校区和年级暂无可发布班级。' : '当前方案暂无可发布班级。')
+    return
+  }
+  const report = buildValidationReport(targetClassIds)
   if (publish && report.totalRemaining > 0) {
+    const scopeLabel = scope === 'grade' ? `「${currentPublishScopeLabel.value}」` : '当前方案'
     try {
       await ElMessageBox.confirm(
-        `当前仍有 ${report.totalRemaining} 课时未安排，确认仍要生成课表吗？`,
+        `${scopeLabel}仍有 ${report.totalRemaining} 课时未安排，确认仍要生成课表吗？`,
         '发布确认',
         {
           type: 'warning',
@@ -2966,11 +3003,12 @@ async function persistScheduleResult(publish: boolean): Promise<void> {
   try {
     const now = Date.now()
     const previous = readSavedWorkbenchEntry()
+    const scheduleSnapshot = snapshotScheduleMap()
     const entry: SavedScheduleWorkbenchEntry = {
       selectedCampus: selectedCampus.value,
       selectedGrade: selectedGrade.value,
       selectedClass: selectedClass.value,
-      scheduleMap: snapshotScheduleMap(),
+      scheduleMap: scheduleSnapshot,
       savedAt: now,
       publishedAt: publish ? now : previous?.publishedAt,
       version: (previous?.version || 0) + 1
@@ -2978,7 +3016,42 @@ async function persistScheduleResult(publish: boolean): Promise<void> {
     const nextDrafts = { ...(workbenchPersistState.value.drafts || {}) }
     delete nextDrafts[currentPlanId.value]
     const nextPublishedEntries = { ...(workbenchPersistState.value.publishedEntries || {}) }
-    if (publish) nextPublishedEntries[currentPlanId.value] = structuredClone(entry)
+    if (publish) {
+      const previousPublished = nextPublishedEntries[currentPlanId.value] && typeof nextPublishedEntries[currentPlanId.value] === 'object'
+        ? nextPublishedEntries[currentPlanId.value] as SavedScheduleWorkbenchEntry
+        : null
+      const scopeKey = publishScopeKey(selectedCampus.value, selectedGrade.value)
+      const publishedScheduleMap = scope === 'all'
+        ? structuredClone(scheduleSnapshot)
+        : structuredClone(previousPublished?.scheduleMap || {})
+      const publishedScopes = { ...(previousPublished?.publishedScopes || {}) }
+      const publishedScopeClassIds = { ...(previousPublished?.publishedScopeClassIds || {}) }
+
+      if (scope === 'grade') {
+        const previousScopeClassIds = publishedScopeClassIds[scopeKey] || targetClassIds
+        previousScopeClassIds.forEach((classId) => delete publishedScheduleMap[classId])
+        targetClassIds.forEach((classId) => {
+          publishedScheduleMap[classId] = structuredClone(scheduleSnapshot[classId] || {})
+        })
+        publishedScopes[scopeKey] = now
+        publishedScopeClassIds[scopeKey] = [...targetClassIds]
+      } else {
+        classRecords.value.forEach((classItem) => {
+          const key = publishScopeKey(classItem.campusId, classItem.grade)
+          publishedScopes[key] = now
+          const classIds = publishedScopeClassIds[key] || []
+          if (!classIds.includes(classItem.id)) publishedScopeClassIds[key] = [...classIds, classItem.id]
+        })
+      }
+
+      nextPublishedEntries[currentPlanId.value] = {
+        ...structuredClone(entry),
+        scheduleMap: publishedScheduleMap,
+        publishedScopes,
+        publishedScopeClassIds,
+        version: (previousPublished?.version || 0) + 1
+      } satisfies SavedScheduleWorkbenchEntry
+    }
     const nextPublishedAt = publish ? now : lastPublishedAt.value
     workbenchPersistState.value = {
       ...workbenchPersistState.value,
@@ -2993,10 +3066,14 @@ async function persistScheduleResult(publish: boolean): Promise<void> {
         [currentPlanId.value]: { savedAt: now, publishedAt: nextPublishedAt }
       }
     }
-    await saveWorkbenchPersistSnapshot(workbenchPersistState.value)
+    await saveWorkbenchPersistSnapshot(workbenchPersistState.value, currentTermId.value)
     lastPersistedAt.value = now
     if (publish) lastPublishedAt.value = now
-    notify.success(publish ? '班级、教师、课程和学校课表已同步生成并保存。' : '排课结果已保存。')
+    notify.success(publish
+      ? scope === 'grade'
+        ? `已更新「${currentPublishScopeLabel.value}」课表，其他年级保持不变。`
+        : '班级、教师、课程和学校课表已全部生成并保存。'
+      : '排课结果已保存。')
   } catch (error) {
     console.error('[ScheduleWorkbench] 保存失败', error)
     notify.error('保存失败，请稍后重试。')
@@ -3007,6 +3084,7 @@ async function persistScheduleResult(publish: boolean): Promise<void> {
 
 function openPublishDialog(): void {
   if (persistLoading.value) return
+  publishScope.value = 'grade'
   publishDialogVisible.value = true
 }
 
@@ -3015,8 +3093,9 @@ function closePublishDialog(): void {
 }
 
 async function confirmPublishDialog(): Promise<void> {
+  const scope = publishScope.value
   closePublishDialog()
-  await persistScheduleResult(true)
+  await persistScheduleResult(true, scope)
 }
 
 function parseSlotKey(slotKey: string): { period: number; day: string } | null {
@@ -3450,10 +3529,25 @@ function toggleGradeLock(): void {
     <el-dialog
       v-model="publishDialogVisible"
       title="生成课表"
-      width="520px"
+      width="560px"
       class="publish-timetable-dialog"
+      :lock-scroll="false"
     >
-      <p class="publish-type-intro">保存当前排课结果，并同步更新以下四类课表：</p>
+      <section class="publish-scope-section">
+        <strong class="publish-scope-title">发布范围</strong>
+        <el-radio-group v-model="publishScope" class="publish-scope-options">
+          <el-radio value="grade" border>
+            <span>当前年级</span>
+            <small>{{ currentPublishScopeLabel }}</small>
+          </el-radio>
+          <el-radio value="all" border>
+            <span>全部年级</span>
+            <small>更新当前方案的全部排课结果</small>
+          </el-radio>
+        </el-radio-group>
+        <p class="publish-scope-hint">{{ publishScopeHint }}</p>
+      </section>
+      <p class="publish-type-intro">本次发布会同步更新以下四类课表：</p>
       <div class="publish-type-list">
         <div v-for="item in publishTypeOptions" :key="item.value" class="publish-type-item">
           <el-icon class="publish-type-status"><CircleCheckFilled /></el-icon>
@@ -3464,7 +3558,7 @@ function toggleGradeLock(): void {
         </div>
       </div>
       <el-alert
-        title="四类课表共用当前排课数据，生成后可在“课表管理”中切换查看。"
+        title="四类课表共用同一份发布数据，生成后可在“课表管理”中切换查看。"
         type="info"
         :closable="false"
         show-icon

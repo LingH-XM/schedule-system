@@ -13,8 +13,9 @@ const router = useRouter()
 const navItems = [
   { label: '控制台', to: '/dashboard' },
   { label: '账户管理', to: '/users', minRole: 'school_admin' as const },
+  { label: '学校功能配置', to: '/school-features', exactRole: 'super_admin' as const },
   { label: '基础数据', to: '/basic-data', permission: 'basic_data.read' },
-  { label: '排课规则设置', to: '/rule-settings', permission: 'rules.read' },
+  { label: '排课规则', to: '/rule-settings', permission: 'rules.read' },
   { label: '排课管理', to: '/schedules', permission: 'schedule.read' },
   { label: '教师课时统计', to: '/teacher-hours-statistics', permission: 'timetable.read' },
   { label: '课表管理', to: '/timetable-management', permission: 'timetable.read' }
@@ -30,8 +31,11 @@ const currentRoleLabel = computed(() => ({
 const visibleNavItems = computed(() =>
   navItems.filter((item) =>
     (!item.minRole || hasRequiredRole(currentUser.value?.role, item.minRole)) &&
+    (!item.exactRole || currentUser.value?.role === item.exactRole) &&
     (!item.permission || hasPermission(item.permission))
-  )
+  ).map((item) => item.to === '/users'
+    ? { ...item, label: currentUser.value?.role === 'super_admin' ? '学校账户' : '子账户管理' }
+    : item)
 )
 const SIDEBAR_COLLAPSE_KEY = 'admin_sidebar_collapsed_v1'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === '1')

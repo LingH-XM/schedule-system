@@ -13,9 +13,11 @@ import { SmartSchedulerService } from './smart-scheduler.service.js'
 import { SmartSchedulerQueueService } from './smart-scheduler-queue.service.js'
 import { StructuredDataSyncService } from './structured-data-sync.service.js'
 import { DataScopeService } from './data-scope.service.js'
+import { SchoolFeaturesController } from './school-features.controller.js'
+import { SchoolFeaturesService } from './school-features.service.js'
 
 @Module({
-  controllers: [AuthController, BasicDataController, RuleSettingsController, ScheduleStateController, SmartSchedulerController, SystemController],
-  providers: [AuthService, AuthGuard, DataScopeService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService]
+  controllers: [AuthController, BasicDataController, RuleSettingsController, ScheduleStateController, SmartSchedulerController, SystemController, SchoolFeaturesController],
+  providers: [AuthService, AuthGuard, DataScopeService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService, SchoolFeaturesService]
 })
 export class AppModule {}

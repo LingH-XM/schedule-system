@@ -7,6 +7,12 @@ import { basicDataRepository } from '../../services/basicDataRepository'
 import { loadWorkbenchPersistSnapshot, saveWorkbenchPersistSnapshot } from '../../services/scheduleStateRepository'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabelFromParts } from '../../utils/termLabel'
+import {
+  GRADE_ORDER_MAP as gradeOrderMap,
+  STANDARD_GRADE_LABELS,
+  compareGradeLabels,
+  sortGradeLabels
+} from '../../utils/gradeOrder'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 
 type BaseMenu = {
@@ -292,16 +298,16 @@ const groups: BaseGroup[] = [
       { key: 'group-manage', label: '教研与活动分组', status: 'done' },
       { key: 'teacher-entry', label: '录入教师', status: 'done' },
       { key: 'teaching-info', label: '任课信息', status: 'done' },
-      { key: 'student-entry', label: '录入学生（选填）', status: 'done' }
+      { key: 'student-entry', label: '录入学生（开发中）', status: 'done' }
     ]
   },
   {
     key: 'classroom',
     label: '教室信息',
     children: [
-      { key: 'room-type', label: '教室类型（选填）', status: 'done' },
-      { key: 'room-entry', label: '录入教室（选填）', status: 'done' },
-      { key: 'classroom-map', label: '班级教室（选填）', status: 'done' }
+      { key: 'room-type', label: '教室类型（开发中）', status: 'done' },
+      { key: 'room-entry', label: '录入教室（开发中）', status: 'done' },
+      { key: 'classroom-map', label: '班级教室（开发中）', status: 'done' }
     ]
   }
 ]
@@ -830,7 +836,11 @@ const termOptions = computed<TermOption[]>(() =>
     })
 )
 const selectedTerm = ref('')
+const teachingTermDraft = ref('')
 const selectedTermOption = computed(() => termOptions.value.find((item) => item.value === selectedTerm.value) ?? null)
+const isTeachingTermDirty = computed(
+  () => Boolean(teachingTermDraft.value) && teachingTermDraft.value !== selectedTerm.value
+)
 const termDataSnapshots = ref<Record<string, TermDataSnapshot>>({})
 const activeTermDataKey = ref('')
 
@@ -856,6 +866,14 @@ watch(
   { immediate: true }
 )
 
+watch(
+  selectedTerm,
+  (value) => {
+    teachingTermDraft.value = value
+  },
+  { immediate: true }
+)
+
 const teachingCycles = computed<TeachingCycle[]>(() => {
   const term = selectedTermOption.value
   if (!term) return []
@@ -871,10 +889,16 @@ const teachingCycles = computed<TeachingCycle[]>(() => {
   ]
 })
 
-function setCurrentTeachingTerm(value: string): void {
-  const term = termOptions.value.find((item) => item.value === value)
-  if (!term) return
-  notify.success(`已将「${term.label}」设为当前教学周期。`)
+async function saveCurrentTeachingTerm(): Promise<void> {
+  if (!termOptions.value.some((item) => item.value === teachingTermDraft.value)) {
+    notify.warning('请选择要启用的当前学期。')
+    return
+  }
+  if (!isTeachingTermDirty.value) {
+    await persistBasicData('教学周期已保存。')
+    return
+  }
+  selectedTerm.value = teachingTermDraft.value
 }
 
 const importableTermOptions = computed(() =>
@@ -933,7 +957,7 @@ function createImportedTermData(source: TermDataSnapshot, promoteGrades: boolean
   return next
 }
 
-function importTermData(): void {
+async function importTermData(): Promise<void> {
   const source = termDataSnapshots.value[termImportForm.sourceTerm]
   if (!source) {
     notify.warning('请选择要导入的来源学期。')
@@ -942,8 +966,10 @@ function importTermData(): void {
   const imported = createImportedTermData(source, termImportForm.promoteGrades)
   applyTermDataSnapshot(imported)
   termDataSnapshots.value = { ...termDataSnapshots.value, [selectedTerm.value]: createTermDataSnapshot() }
-  termImportDialogVisible.value = false
-  notify.success(termImportForm.promoteGrades ? '基础数据已导入，并完成升年级处理。' : '基础数据已导入当前学期。')
+  const saved = await persistBasicData(
+    termImportForm.promoteGrades ? '基础数据已导入，并完成升年级处理。' : '基础数据已导入当前学期。'
+  )
+  if (saved) termImportDialogVisible.value = false
 }
 
 const courseTab = ref<'全部' | CourseScope>('小学')
@@ -1273,18 +1299,7 @@ const classHourClassRows = ref<ClassHourClassRow[]>([])
 
 const classRecords = ref<ClassRecord[]>([])
 
-const gradeOrderMap: Record<string, number> = {
-  一年级: 1,
-  二年级: 2,
-  三年级: 3,
-  四年级: 4,
-  五年级: 5,
-  六年级: 6,
-  七年级: 7,
-  八年级: 8,
-  九年级: 9
-}
-const gradeLabels = Object.entries(gradeOrderMap).sort(([, a], [, b]) => a - b).map(([grade]) => grade)
+const gradeLabels = [...STANDARD_GRADE_LABELS]
 const termImportDialogVisible = ref(false)
 const termImportForm = reactive({ sourceTerm: '', promoteGrades: false })
 
@@ -1347,7 +1362,7 @@ const currentClassHourRows = computed(() =>
         item.campusId === selectedHoursCampusId.value &&
         isGradeInEducationSystem(item.grade, selectedHoursEducationSystem.value)
     )
-    .sort((a, b) => (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999))
+    .sort((a, b) => compareGradeLabels(a.grade, b.grade))
 )
 
 const classHourResetGradeOptions = computed(() => currentClassHourRows.value.map((item) => item.grade))
@@ -1387,8 +1402,34 @@ function syncClassHoursBatchFormBySelection(): void {
     applyClassHoursBatchDraftToForm(null)
     return
   }
-  const key = getClassHoursBatchKey(selectedHoursCampusId.value, selectedHoursEducationSystem.value)
-  applyClassHoursBatchDraftToForm(classHoursBatchStore.value[key])
+
+  const configuredRows = currentClassHourRows.value.filter(
+    (row) => row.weeklyDays > 0 && row.morningLessons > 0 && row.afternoonLessons > 0
+  )
+  if (configuredRows.length === 0) {
+    applyClassHoursBatchDraftToForm(null)
+    return
+  }
+
+  const lessonTuples = new Set(
+    configuredRows.map((row) => `${row.weeklyDays}::${row.morningLessons}::${row.afternoonLessons}`)
+  )
+  if (lessonTuples.size !== 1) {
+    applyClassHoursBatchDraftToForm(null)
+    return
+  }
+
+  const first = configuredRows[0]
+  const activitySignatures = new Set(
+    configuredRows.map((row) => JSON.stringify(cloneFixedActivities(row.fixedActivities)))
+  )
+  applyClassHoursBatchDraftToForm({
+    weeklyDays: first.weeklyDays,
+    morningLessons: first.morningLessons,
+    afternoonLessons: first.afternoonLessons,
+    fixedActivities:
+      activitySignatures.size === 1 ? cloneFixedActivities(first.fixedActivities) : null
+  })
 }
 
 function rememberClassHoursBatchDraft(): void {
@@ -1439,7 +1480,7 @@ function syncClassHourRowsFromClassSettings(): void {
     .map(({ campusId, grade }) => existingByKey.get(`${campusId}::${grade}`) ?? createDefaultClassHourRow(campusId, grade))
     .sort((a, b) => {
       if (a.campusId !== b.campusId) return a.campusId.localeCompare(b.campusId)
-      return (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999)
+      return compareGradeLabels(a.grade, b.grade)
     })
 
   classHourRows.value = next
@@ -1486,9 +1527,9 @@ function arrangementCoursesForScope(campusId: string, grade: string): CourseItem
 const arrangementAvailableCourses = computed(() => arrangementCoursesForScope(arrangementCampusId.value, arrangementGrade.value))
 
 const arrangementGradeOptions = computed(() => {
-  const uniqueGrades = Array.from(new Set(classRecords.value.map((item) => item.grade)))
+  const uniqueGrades = sortGradeLabels(classRecords.value.map((item) => item.grade))
   if (uniqueGrades.length > 0) {
-    return uniqueGrades.sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+    return uniqueGrades
   }
   return ['二年级']
 })
@@ -1844,15 +1885,24 @@ function createBasicDataSnapshot(): BasicDataSnapshot {
 
 async function persistBasicData(
   successMessage?: string,
-  options?: { silentSuccess?: boolean }
+  options?: { silentSuccess?: boolean; clearTeachingInfoDirty?: boolean }
 ): Promise<boolean> {
   try {
+    classRoomMappings.value = normalizeClassRoomMappings(
+      classRoomMappings.value,
+      classRecords.value,
+      roomRecords.value
+    )
+    syncClassHourRowsFromClassSettings()
+    syncActivityGroupsFromRealData()
     persistCurrentArrangementScope()
     const result = basicDataRepository.save(createBasicDataSnapshot())
     if (result instanceof Promise) {
       await result
     }
-    teachingInfoDirty.value = false
+    if (options?.clearTeachingInfoDirty) {
+      teachingInfoDirty.value = false
+    }
     if (successMessage && !options?.silentSuccess) {
       notify.success(successMessage)
     }
@@ -1964,7 +2014,7 @@ function loadBasicDataSnapshot(): void {
     syncClassHoursBatchFormBySelection()
     arrangementGrade.value = parsed.arrangementGrade ?? defaultBasicDataSnapshot.arrangementGrade
     const gradeOptions = Array.from(new Set(classRecords.value.map((item) => item.grade))).sort(
-      (a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999)
+      compareGradeLabels
     )
     if (gradeOptions.length > 0 && !gradeOptions.includes(arrangementGrade.value)) {
       arrangementGrade.value = gradeOptions[0]
@@ -2029,42 +2079,8 @@ watch(selectedTerm, (nextTerm) => {
   applyTermDataSnapshot(targetSnapshot)
   activeTermDataKey.value = nextTerm
   window.dispatchEvent(new CustomEvent('schedule-term-changed', { detail: nextTerm }))
-  notify.success(`已切换至「${selectedTermOption.value?.label ?? nextTerm}」，数据已按学期独立保存。`)
+  void persistBasicData(`已切换至「${selectedTermOption.value?.label ?? nextTerm}」，数据已按学期独立保存。`)
 })
-
-watch(
-  [
-    campuses,
-    schoolYears,
-    teachingCycles,
-    courses,
-    roomTypes,
-    roomRecords,
-    classRoomMappings,
-    teacherRecords,
-    studentRecords,
-    groupRecords,
-    classRecords,
-    classHourRows,
-    classHourClassRows,
-    arrangementRows,
-    arrangementBatchValues,
-    arrangementScopeStore,
-    selectedTerm,
-    selectedHoursCampusId,
-    selectedHoursEducationSystem,
-    arrangementCampusId,
-    arrangementGrade
-  ],
-  () => {
-    if (!basicDataHydrated.value) return
-    const result = basicDataRepository.save(createBasicDataSnapshot())
-    if (result instanceof Promise) {
-      void result
-    }
-  },
-  { deep: true }
-)
 
 watch(
   [classRecords, roomRecords, roomTypes],
@@ -2221,6 +2237,8 @@ watch(selectedHoursCampusId, (campusId) => {
 
 watch([selectedHoursCampusId, selectedHoursEducationSystem], syncClassHoursBatchFormBySelection, { immediate: true })
 
+watch(currentClassHourRows, syncClassHoursBatchFormBySelection, { deep: true })
+
 watch(
   () => classSettingForm.stage,
   () => {
@@ -2288,15 +2306,14 @@ const currentClassRecords = computed(() => {
         item.stage === classSettingForm.stage
     )
     .sort((a, b) => {
-      const gradeCompare = (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999)
+      const gradeCompare = compareGradeLabels(a.grade, b.grade)
       if (gradeCompare !== 0) return gradeCompare
       return a.classNo - b.classNo
     })
 })
 
 const classTableGradeFilterOptions = computed(() =>
-  Array.from(new Set(currentClassRecords.value.map((item) => item.grade)))
-    .sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+  sortGradeLabels(currentClassRecords.value.map((item) => item.grade))
     .map((grade) => ({ text: grade, value: grade }))
 )
 
@@ -2366,7 +2383,7 @@ watch([classTableCampusId, classTableGradeFilter], () => {
   classPage.value = 1
 })
 
-function batchCreateClasses(): void {
+async function batchCreateClasses(): Promise<void> {
   if (classSettingForm.grades.length === 0) {
     notify.warning('请至少选择一个年级。')
     return
@@ -2408,13 +2425,17 @@ function batchCreateClasses(): void {
     return
   }
 
+  const previous = cloneTermData(classRecords.value)
   classRecords.value = [...classRecords.value, ...newItems]
+  const saved = await persistBasicData(`已新增 ${newItems.length} 个班级。`)
+  if (!saved) classRecords.value = previous
 }
 
 async function renameClass(record: ClassRecord): Promise<void> {
   const className = await askTextInput('修改班级名称', '编辑班级', record.className)
   if (!className) return
 
+  const previous = cloneTermData(classRecords.value)
   classRecords.value = classRecords.value.map((item) =>
     item.id === record.id
       ? {
@@ -2423,6 +2444,8 @@ async function renameClass(record: ClassRecord): Promise<void> {
         }
       : item
   )
+  const saved = await persistBasicData('班级名称已更新。')
+  if (!saved) classRecords.value = previous
 }
 
 async function confirmDelete(message: string): Promise<boolean> {
@@ -2442,7 +2465,10 @@ async function confirmDelete(message: string): Promise<boolean> {
 async function removeClass(record: ClassRecord): Promise<void> {
   const confirmed = await confirmDelete(`确认删除班级「${formatClassDisplayName(record)}」吗？`)
   if (!confirmed) return
+  const previous = createTermDataSnapshot()
   removeClassesByIds([record.id])
+  const saved = await persistBasicData('班级已删除。')
+  if (!saved) applyTermDataSnapshot(previous)
 }
 
 function removeClassesByIds(ids: string[]): void {
@@ -2470,9 +2496,11 @@ async function removeClassesBatch(): Promise<void> {
   const confirmed = await confirmDelete(`确认批量删除已选 ${ids.length} 个班级吗？将同步删除关联学生、任课和教室映射。`)
   if (!confirmed) return
 
+  const previous = createTermDataSnapshot()
   removeClassesByIds(ids)
   classTableRef.value?.clearSelection()
-  notify.success(`已删除 ${ids.length} 个班级。`)
+  const saved = await persistBasicData(`已删除 ${ids.length} 个班级。`)
+  if (!saved) applyTermDataSnapshot(previous)
 }
 
 function createCampus(): void {
@@ -2484,7 +2512,8 @@ function renameCampus(campus: Campus): void {
 }
 
 async function cleanupWorkbenchDataByCampus(campusId: string, removedClassIds: Set<string>): Promise<number> {
-  const snapshot = await loadWorkbenchPersistSnapshot()
+  if (!selectedTerm.value) return 0
+  const snapshot = await loadWorkbenchPersistSnapshot(selectedTerm.value)
   let changed = false
   let removedPlanCount = 0
 
@@ -2571,14 +2600,17 @@ async function cleanupWorkbenchDataByCampus(campusId: string, removedClassIds: S
   })
 
   if (changed) {
-    await saveWorkbenchPersistSnapshot({
-      entries: nextEntries,
-      publishedEntries: nextPublishedEntries,
-      meta: nextMeta,
-      drafts: nextDrafts,
-      logs: nextLogs,
-      _savedAt: Date.now()
-    })
+    await saveWorkbenchPersistSnapshot(
+      {
+        entries: nextEntries,
+        publishedEntries: nextPublishedEntries,
+        meta: nextMeta,
+        drafts: nextDrafts,
+        logs: nextLogs,
+        _savedAt: Date.now()
+      },
+      selectedTerm.value
+    )
   }
 
   return removedPlanCount
@@ -2625,6 +2657,8 @@ async function removeCampus(campus: Campus): Promise<void> {
     return
   }
 
+  const previousCampuses = cloneTermData(campuses.value)
+  const previousTermData = createTermDataSnapshot()
   campuses.value = campuses.value.filter((item) => item.id !== campusId)
   classRecords.value = classRecords.value.filter((item) => item.campusId !== campusId)
   teacherRecords.value = teacherRecords.value.filter((item) => item.campusId !== campusId)
@@ -2635,13 +2669,24 @@ async function removeCampus(campus: Campus): Promise<void> {
   classHourRows.value = classHourRows.value.filter((item) => (item.campusId ?? '') !== campusId)
   classHourClassRows.value = classHourClassRows.value.filter((item) => item.campusId !== campusId)
   courses.value = courses.value.filter((item) => (item.campusId || '') !== campusId)
-  const removedPlanCount = await cleanupWorkbenchDataByCampus(campusId, removedClassIds)
+  const saved = await persistBasicData(undefined, { silentSuccess: true })
+  if (!saved) {
+    campuses.value = previousCampuses
+    applyTermDataSnapshot(previousTermData)
+    return
+  }
 
-  notify.success(
-    removedPlanCount > 0
-      ? `校区「${campus.name}」及关联数据已删除，并清理 ${removedPlanCount} 个课表方案数据。`
-      : `校区「${campus.name}」及关联数据已删除。`
-  )
+  try {
+    const removedPlanCount = await cleanupWorkbenchDataByCampus(campusId, removedClassIds)
+    notify.success(
+      removedPlanCount > 0
+        ? `校区「${campus.name}」及关联数据已删除，并清理 ${removedPlanCount} 个课表方案数据。`
+        : `校区「${campus.name}」及关联数据已删除。`
+    )
+  } catch (error) {
+    console.error('[BasicData] 清理校区关联课表失败', error)
+    notify.warning(`校区「${campus.name}」已删除，但部分历史课表数据清理失败，请稍后重试。`)
+  }
 }
 
 const campusDialogVisible = ref(false)
@@ -2680,7 +2725,7 @@ function closeCampusDialog(): void {
   campusDialogVisible.value = false
 }
 
-function submitCampusDialog(): void {
+async function submitCampusDialog(): Promise<void> {
   const schoolName = campusForm.schoolName.trim()
   const name = campusForm.name.trim() || '本校区'
   if (!schoolName) {
@@ -2694,6 +2739,8 @@ function submitCampusDialog(): void {
     return
   }
 
+  const previous = cloneTermData(campuses.value)
+  const successMessage = campusDialogMode.value === 'edit' ? '校区信息已更新。' : '校区已新增。'
   if (campusDialogMode.value === 'edit') {
     campuses.value = campuses.value.map((item) =>
       item.id === campusEditingId.value
@@ -2713,6 +2760,11 @@ function submitCampusDialog(): void {
       system: false,
       educationSystem: campusForm.educationSystem
     })
+  }
+  const saved = await persistBasicData(successMessage)
+  if (!saved) {
+    campuses.value = previous
+    return
   }
   closeCampusDialog()
 }
@@ -2768,7 +2820,7 @@ function pickerDefaultDate(value: unknown): Date {
   return parsed
 }
 
-function confirmSemesterEditor(): void {
+async function confirmSemesterEditor(): Promise<void> {
   const values = [
     semesterEditorDraft.yearStartDate,
     semesterEditorDraft.yearEndDate,
@@ -2805,6 +2857,7 @@ function confirmSemesterEditor(): void {
     return
   }
 
+  const previous = cloneTermData(schoolYears.value)
   schoolYears.value = schoolYears.value
     .map((item) =>
       item.id === semesterEditorYearId.value
@@ -2827,6 +2880,11 @@ function confirmSemesterEditor(): void {
       return aStart - bStart
     })
 
+  const saved = await persistBasicData('学年学期已保存。')
+  if (!saved) {
+    schoolYears.value = previous
+    return
+  }
   closeSemesterEditor()
 }
 
@@ -3088,7 +3146,7 @@ const classroomMapView = computed(() => {
   const mappingByClassId = new Map(classRoomMappings.value.map((item) => [item.classId, item.roomId] as const))
   return classRecords.value
     .slice()
-    .sort((a, b) => (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999) || a.classNo - b.classNo)
+    .sort((a, b) => compareGradeLabels(a.grade, b.grade) || a.classNo - b.classNo)
     .map((classItem) => {
       const mappedRoomId = mappingByClassId.get(classItem.id) ?? ''
       const room = roomMap.get(mappedRoomId)
@@ -3111,7 +3169,7 @@ const classRoomMapGradeOptions = computed(() =>
         .filter((item) => !classRoomMapCampusId.value || item.campusId === classRoomMapCampusId.value)
         .map((item) => item.grade)
     )
-  ).sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+  ).sort(compareGradeLabels)
 )
 
 const filteredClassroomMapView = computed(() => {
@@ -3641,14 +3699,14 @@ const studentGradeOptions = computed(() =>
         .filter((item) => !studentEntryCampusId.value || item.campusId === studentEntryCampusId.value)
         .map((item) => item.grade)
     )
-  ).sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+  ).sort(compareGradeLabels)
 )
 
 const studentClassOptions = computed(() =>
   classRecords.value
     .filter((item) => !studentEntryCampusId.value || item.campusId === studentEntryCampusId.value)
     .filter((item) => !studentEntryGrade.value || item.grade === studentEntryGrade.value)
-    .sort((a, b) => (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999) || a.classNo - b.classNo)
+    .sort((a, b) => compareGradeLabels(a.grade, b.grade) || a.classNo - b.classNo)
 )
 
 const studentFormGradeOptions = computed(() =>
@@ -3658,7 +3716,7 @@ const studentFormGradeOptions = computed(() =>
         .filter((item) => !studentEntryCampusId.value || item.campusId === studentEntryCampusId.value)
         .map((item) => item.grade)
     )
-  ).sort((a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999))
+  ).sort(compareGradeLabels)
 )
 
 function getStudentFormClassOptions(grade: string): ClassRecord[] {
@@ -3687,7 +3745,7 @@ const studentRecordView = computed(() => {
     })
     .sort(
       (a, b) =>
-        (gradeOrderMap[a.grade] ?? 999) - (gradeOrderMap[b.grade] ?? 999) ||
+        compareGradeLabels(a.grade, b.grade) ||
         a.classNo - b.classNo ||
         a.classStudentNo - b.classStudentNo
     )
@@ -4282,9 +4340,11 @@ function handleStudentImport(event: Event): void {
         return
       }
 
+      const previous = cloneTermData(studentRecords.value)
       studentRecords.value = normalizeStudentRecords([...studentRecords.value, ...imported], classRecords.value)
       studentImportError.value = ''
-      notify.success(`已导入 ${imported.length} 条学生数据。`)
+      const saved = await persistBasicData(`已导入 ${imported.length} 条学生数据。`)
+      if (!saved) studentRecords.value = previous
     } catch (error) {
       studentImportError.value =
         error instanceof Error ? error.message : '读取文件失败，请检查 Excel 格式后重试。'
@@ -4297,9 +4357,12 @@ function handleStudentImport(event: Event): void {
 async function removeTeacher(record: TeacherRecord): Promise<void> {
   const confirmed = await confirmDelete(`确认删除教师「${record.name}」吗？`)
   if (!confirmed) return
+  const previous = createTermDataSnapshot()
   teachingAssignments.value = teachingAssignments.value.filter((item) => item.teacherId !== record.id)
   teacherRecords.value = teacherRecords.value.filter((item) => item.id !== record.id)
   selectedTeacherIds.value = selectedTeacherIds.value.filter((id) => id !== record.id)
+  const saved = await persistBasicData('教师已删除。')
+  if (!saved) applyTermDataSnapshot(previous)
 }
 
 function onTeacherSelectionChange(rows: TeacherRecordView[]): void {
@@ -4315,12 +4378,14 @@ async function removeTeachersBatch(): Promise<void> {
   const confirmed = await confirmDelete(`确认批量删除已选 ${ids.length} 名教师吗？将同步删除其任课信息。`)
   if (!confirmed) return
 
+  const previous = createTermDataSnapshot()
   const idSet = new Set(ids)
   teachingAssignments.value = teachingAssignments.value.filter((item) => !idSet.has(item.teacherId))
   teacherRecords.value = teacherRecords.value.filter((item) => !idSet.has(item.id))
   selectedTeacherIds.value = []
   teacherTableRef.value?.clearSelection()
-  notify.success(`已删除 ${ids.length} 名教师。`)
+  const saved = await persistBasicData(`已删除 ${ids.length} 名教师。`)
+  if (!saved) applyTermDataSnapshot(previous)
 }
 
 function openCreateTeacherDialog(): void {
@@ -4335,7 +4400,7 @@ function closeCreateTeacherDialog(): void {
   teacherCreateDialogVisible.value = false
 }
 
-function submitCreateTeacherDialog(): void {
+async function submitCreateTeacherDialog(): Promise<void> {
   const name = teacherCreateForm.name.trim()
   if (!name) {
     teacherCreateDialogError.value = '姓名为必填项。'
@@ -4344,6 +4409,7 @@ function submitCreateTeacherDialog(): void {
 
   const campusId = teacherCreateForm.campusId || campuses.value[0]?.id || ''
 
+  const previous = createTermDataSnapshot()
   teacherRecords.value.unshift({
     id: generateTeacherId(teacherRecords.value.map((item) => item.id)),
     name,
@@ -4352,8 +4418,12 @@ function submitCreateTeacherDialog(): void {
     weeklyLessonRequirement: normalizeNonNegativeInteger(teacherCreateForm.weeklyLessonRequirement),
     campusId
   })
+  const saved = await persistBasicData('教师已新增。')
+  if (!saved) {
+    applyTermDataSnapshot(previous)
+    return
+  }
   teacherCreateDialogVisible.value = false
-  notify.success('教师已新增。')
 }
 
 function openEditTeacherDialog(record: TeacherRecord): void {
@@ -4369,7 +4439,7 @@ function closeEditTeacherDialog(): void {
   teacherEditDialogVisible.value = false
 }
 
-function submitEditTeacherDialog(): void {
+async function submitEditTeacherDialog(): Promise<void> {
   const name = teacherEditForm.name.trim()
   const campusId = teacherEditForm.campusId || campuses.value[0]?.id || ''
 
@@ -4378,6 +4448,7 @@ function submitEditTeacherDialog(): void {
     return
   }
 
+  const previous = createTermDataSnapshot()
   teacherRecords.value = teacherRecords.value.map((item) =>
         item.id === teacherEditingId.value
       ? {
@@ -4388,8 +4459,12 @@ function submitEditTeacherDialog(): void {
         }
       : item
   )
+  const saved = await persistBasicData('教师信息已更新。')
+  if (!saved) {
+    applyTermDataSnapshot(previous)
+    return
+  }
   closeEditTeacherDialog()
-  notify.success('教师信息已更新。')
 }
 
 const groupTableRef = ref<TableInstance | null>(null)
@@ -4624,7 +4699,7 @@ const teachingInfoGradeOptions = computed(() =>
         .map((item) => item.grade)
     )
   ).sort(
-    (a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999)
+    compareGradeLabels
   )
 )
 
@@ -4799,7 +4874,7 @@ function markTeachingInfoDirty(): void {
 }
 
 async function saveTeachingInfo(): Promise<void> {
-  await persistBasicData('任课信息已保存。')
+  await persistBasicData('任课信息已保存。', { clearTeachingInfoDirty: true })
 }
 
 function resolveTeachingInfoCampusId(): string {
@@ -5690,7 +5765,7 @@ function closeClassHoursByClassDialog(): void {
   classHoursByClassRows.value = []
 }
 
-function saveClassHoursByClassDialog(): void {
+async function saveClassHoursByClassDialog(): Promise<void> {
   const incomplete = classHoursByClassRows.value.find(
     (item) => item.weeklyDays <= 0 || item.morningLessons <= 0 || item.afternoonLessons <= 0
   )
@@ -5700,12 +5775,17 @@ function saveClassHoursByClassDialog(): void {
   }
   const campusId = classHoursByClassCampusId.value
   const grade = classHoursByClassGrade.value
+  const previous = cloneTermData(classHourClassRows.value)
   classHourClassRows.value = [
     ...classHourClassRows.value.filter((item) => !(item.campusId === campusId && item.grade === grade)),
     ...classHoursByClassRows.value.map((item) => ({ ...item }))
   ]
+  const saved = await persistBasicData(`已保存「${grade}」按班课时设置。`)
+  if (!saved) {
+    classHourClassRows.value = previous
+    return
+  }
   closeClassHoursByClassDialog()
-  notify.success(`已保存「${grade}」按班课时设置。`)
 }
 
 function setByClass(row: ClassHourRow): void {
@@ -5813,7 +5893,7 @@ function arrangementGradeClassRecords(campusId: string, grade: string): ClassRec
 
 function arrangementGradesForCampus(campusId: string): string[] {
   return Array.from(new Set(classRecords.value.filter((item) => item.campusId === campusId).map((item) => item.grade))).sort(
-    (a, b) => (gradeOrderMap[a] ?? 999) - (gradeOrderMap[b] ?? 999)
+    compareGradeLabels
   )
 }
 
@@ -7013,7 +7093,15 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
           <p v-if="teachingInfoImportError" class="error">{{ teachingInfoImportError }}</p>
 
           <div class="arrangement-table-wrap">
-            <table class="arrangement-table teaching-info-matrix">
+            <table
+              class="arrangement-table teaching-info-matrix"
+              :style="{ minWidth: `${238 + Math.max(teachingInfoMatrixCourses.length, 1) * 112}px` }"
+            >
+              <colgroup>
+                <col class="teaching-info-class-col" />
+                <col class="teaching-info-head-teacher-col" />
+                <col v-for="course in teachingInfoMatrixCourses" :key="`col-${course.id}`" />
+              </colgroup>
               <thead>
                 <tr>
                   <th class="sticky-col">班级</th>
@@ -7153,19 +7241,23 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
           <div class="lesson-cycle-setting-card">
             <div class="lesson-cycle-setting-copy">
               <h2>设置当前教学周期</h2>
-              <p>当前教学周期会用于任课信息、班级课时和后续排课。切换后自动保存并立即生效。</p>
+              <p>当前教学周期会用于任课信息、班级课时和后续排课。选择学期后，点击保存才会生效。</p>
             </div>
-            <label class="lesson-cycle-setting-field">
+            <div class="lesson-cycle-setting-field">
               <span>当前学期</span>
-              <el-select
-                v-model="selectedTerm"
-                class="lesson-cycle-term-select"
-                placeholder="选择当前学期"
-                @change="setCurrentTeachingTerm"
-              >
-                <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
-              </el-select>
-            </label>
+              <span class="lesson-cycle-setting-control">
+                <el-select
+                  v-model="teachingTermDraft"
+                  class="lesson-cycle-term-select"
+                  placeholder="选择当前学期"
+                >
+                  <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
+                </el-select>
+                <el-button type="primary" :disabled="!teachingTermDraft" @click.prevent="saveCurrentTeachingTerm">
+                  保存
+                </el-button>
+              </span>
+            </div>
           </div>
 
           <div v-if="selectedTermOption && teachingCycles[0]" class="lesson-cycle-current-card">
@@ -7195,7 +7287,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-checkbox v-model="termImportForm.promoteGrades">导入时升年级</el-checkbox>
             </el-form>
             <p class="dialog-tip">
-              勾选后，班级、学生和班级课时将按校区学段学制顺延一个年级；小学六年级、初中九年级和九年一贯制九年级不会带入。课程安排不会复制，需要在新学期重新安排。
+              勾选后，班级、学生和班级课时将按校区学段学制顺延一个年级；小学六年级、初中九年级和九年一贯制九年级不会带入。仅导入基础数据，课程安排、排课方案、排课结果和已发布课表均不会复制。
             </p>
             <template #footer>
               <div class="dialog-actions">
@@ -7435,7 +7527,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="智能排课总课时" min-width="120" align="center" header-align="center">
+            <el-table-column label="总课时数" min-width="120" align="center" header-align="center">
               <template #default="{ row }">{{ getClassHourTotalLessons(row) }}</template>
             </el-table-column>
             <el-table-column label="操作" min-width="110">
@@ -7487,7 +7579,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="智能排课总课时" min-width="120" align="center" header-align="center">
+              <el-table-column label="总课时数" min-width="120" align="center" header-align="center">
                 <template #default="{ row }">{{ getClassHourTotalLessons(row) }}</template>
               </el-table-column>
             </el-table>

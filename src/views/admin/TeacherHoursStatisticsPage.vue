@@ -304,12 +304,12 @@ async function refreshData(showSuccess = false): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const [basicDataResult, plans, workbench] = await Promise.all([
-      Promise.resolve(basicDataRepository.load()),
-      loadSchedulePlans(),
-      loadWorkbenchPersistSnapshot()
-    ])
+    const basicDataResult = await Promise.resolve(basicDataRepository.load())
     const basicData = basicDataResult ?? {}
+    const termId = String(basicData.selectedTerm || '').trim()
+    const [plans, workbench] = termId
+      ? await Promise.all([loadSchedulePlans(termId), loadWorkbenchPersistSnapshot(termId)])
+      : [[], { entries: {}, publishedEntries: {}, meta: {}, drafts: {}, logs: {} }]
     campuses.value = Array.isArray(basicData.campuses) ? basicData.campuses : []
     teacherRecords.value = Array.isArray(basicData.teacherRecords) ? basicData.teacherRecords : []
     schedulePlans.value = plans
@@ -431,19 +431,26 @@ onMounted(() => void refreshData())
         empty-text="当前课表暂无已安排教师"
         @sort-change="handleSortChange"
       >
-        <el-table-column label="序号" width="72" align="center">
+        <el-table-column label="序号" width="72" align="center" header-align="center">
           <template #default="{ $index }">{{ rowIndex($index) }}</template>
         </el-table-column>
-        <el-table-column prop="name" label="教师姓名" min-width="130" sortable="custom" />
-        <el-table-column prop="campusName" label="校区" min-width="130" sortable="custom" />
-        <el-table-column prop="requiredHours" label="周课时要求" width="130" align="center" sortable="custom" />
-        <el-table-column prop="scheduledHours" label="已排课时" width="120" align="center" sortable="custom">
+        <el-table-column prop="name" label="教师姓名" min-width="130" align="center" header-align="center" sortable="custom" />
+        <el-table-column
+          prop="campusName"
+          label="校区"
+          min-width="130"
+          align="center"
+          header-align="center"
+          sortable="custom"
+        />
+        <el-table-column prop="requiredHours" label="周课时要求" width="130" align="center" header-align="center" sortable="custom" />
+        <el-table-column prop="scheduledHours" label="已排课时" width="120" align="center" header-align="center" sortable="custom">
           <template #default="{ row }"><strong class="teacher-hours-count">{{ row.scheduledHours }}</strong></template>
         </el-table-column>
-        <el-table-column prop="difference" label="课时差额" width="110" align="center" sortable="custom">
+        <el-table-column prop="difference" label="课时差额" width="110" align="center" header-align="center" sortable="custom">
           <template #default="{ row }">{{ formatDifference(row.difference) }}</template>
         </el-table-column>
-        <el-table-column prop="completionRate" label="完成情况" min-width="180" sortable="custom">
+        <el-table-column prop="completionRate" label="完成情况" min-width="180" align="center" header-align="center" sortable="custom">
           <template #default="{ row }">
             <div v-if="row.completionRate !== null" class="teacher-hours-progress">
               <el-progress :percentage="Math.min(100, row.completionRate)" :stroke-width="8" :show-text="false" />
@@ -452,7 +459,7 @@ onMounted(() => void refreshData())
             <span v-else class="teacher-hours-muted">未设置要求</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="110" align="center" sortable="custom">
+        <el-table-column prop="status" label="状态" width="110" align="center" header-align="center" sortable="custom">
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.status)" effect="light">{{ row.status }}</el-tag>
           </template>
@@ -631,6 +638,17 @@ onMounted(() => void refreshData())
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.teacher-hours-table-wrap :deep(.el-table th.is-center .cell) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.teacher-hours-table-wrap :deep(.el-table td.is-center .cell) {
+  text-align: center;
 }
 
 .teacher-hours-count { color: #2588ef; font-size: 16px; }

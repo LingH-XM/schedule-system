@@ -1,5 +1,6 @@
 import { withAccountQuery, withAccountStorageKey } from './accountContext'
 import { authHeaders } from './auth'
+import { basicDataRepository } from './basicDataRepository'
 
 export type OddEvenRuleRecord = {
   id: string
@@ -189,6 +190,7 @@ export type RuleSettingsSnapshot = {
   consecutiveSettings: ConsecutiveSettingMap
   courseDefaultConfig: CourseDefaultConfig
   ruleWeightConfigs: RuleWeightConfigRecord[]
+  _termId?: string
   _savedAt?: number
 }
 
@@ -199,6 +201,29 @@ const ruleSettingsApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').trim().
 const ruleSettingsApiProfile = (import.meta.env.VITE_API_PROFILE ?? 'test').trim().toLowerCase() || 'test'
 const ruleSettingsPlanId = (import.meta.env.VITE_RULE_SETTINGS_PLAN_ID ?? import.meta.env.VITE_BASIC_DATA_PLAN_ID ?? 'default').trim() || 'default'
 const RULE_SETTINGS_API_PATH = `/api/${ruleSettingsApiProfile}/rule-settings`
+let activeRuleSettingsTermId = ''
+
+function normalizeRuleSettingsTermId(value: unknown): string {
+  return String(value || '').trim()
+}
+
+function scopedRuleSettingsStorageKey(termId: string): string {
+  return `${RULE_SETTINGS_STORAGE_KEY}:term:${encodeURIComponent(termId)}`
+}
+
+function scopedRuleSettingsEndpoint(termId: string): string {
+  return withAccountQuery(
+    `${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}&termId=${encodeURIComponent(termId)}`
+  )
+}
+
+async function resolveRuleSettingsTermId(termId?: string): Promise<string> {
+  const explicit = normalizeRuleSettingsTermId(termId)
+  if (explicit) return explicit
+  const loaded = basicDataRepository.load()
+  const snapshot = loaded instanceof Promise ? await loaded : loaded
+  return normalizeRuleSettingsTermId(snapshot?.selectedTerm)
+}
 
 export const defaultOddEvenRules: OddEvenRuleRecord[] = []
 export const defaultCourseDefaultConfig: CourseDefaultConfig = {
@@ -856,10 +881,12 @@ function isSnapshotPayload(payload: unknown): payload is Partial<RuleSettingsSna
   return Boolean(payload) && typeof payload === 'object'
 }
 
-export function loadRuleSettingsSnapshot(): RuleSettingsSnapshot {
-  const raw = localStorage.getItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY))
+export function loadRuleSettingsSnapshot(termId = activeRuleSettingsTermId): RuleSettingsSnapshot {
+  const normalizedTermId = normalizeRuleSettingsTermId(termId)
+  if (!normalizedTermId) return createDefaultSnapshot()
+  const raw = localStorage.getItem(withAccountStorageKey(scopedRuleSettingsStorageKey(normalizedTermId)))
   if (!raw) {
-    return createDefaultSnapshot()
+    return { ...createDefaultSnapshot(), _termId: normalizedTermId }
   }
 
   try {
@@ -929,14 +956,21 @@ export function loadRuleSettingsSnapshot(): RuleSettingsSnapshot {
       consecutiveSettings: cloneConsecutiveSettings(consecutiveSettings),
       courseDefaultConfig: cloneCourseDefaultConfig(courseDefaultConfig),
       ruleWeightConfigs: cloneRuleWeightConfigRecords(ruleWeightConfigs),
+      _termId: normalizedTermId,
       _savedAt: snapshotSavedAt(parsed)
     }
   } catch {
-    return createDefaultSnapshot()
+    return { ...createDefaultSnapshot(), _termId: normalizedTermId }
   }
 }
 
-export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
+export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot, termId = activeRuleSettingsTermId): void {
+  const normalizedTermId = normalizeRuleSettingsTermId(termId)
+  if (!normalizedTermId) {
+    console.warn('[RuleSettings] 当前学年学期未设置，已跳过规则保存。')
+    return
+  }
+  activeRuleSettingsTermId = normalizedTermId
   const serialized = {
     version: CURRENT_SNAPSHOT_VERSION,
     globalFixedPoints: cloneGlobalFixedPoints(snapshot.globalFixedPoints),
@@ -952,13 +986,17 @@ export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
     consecutiveSettings: cloneConsecutiveSettings(snapshot.consecutiveSettings || {}),
     courseDefaultConfig: normalizeCourseDefaultConfig(snapshot.courseDefaultConfig),
     ruleWeightConfigs: cloneRuleWeightConfigRecords(snapshot.ruleWeightConfigs || []),
+    _termId: normalizedTermId,
     _savedAt: Date.now()
   }
 
-  localStorage.setItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY), JSON.stringify(serialized))
+  localStorage.setItem(
+    withAccountStorageKey(scopedRuleSettingsStorageKey(normalizedTermId)),
+    JSON.stringify(serialized)
+  )
 
   if (ruleSettingsSource === 'api') {
-    const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
+    const endpoint = scopedRuleSettingsEndpoint(normalizedTermId)
     void fetch(endpoint, {
       method: 'PUT',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -969,13 +1007,16 @@ export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
   }
 }
 
-export async function hydrateRuleSettingsSnapshotFromApi(): Promise<RuleSettingsSnapshot> {
-  const local = loadRuleSettingsSnapshot()
+export async function hydrateRuleSettingsSnapshotFromApi(termId?: string): Promise<RuleSettingsSnapshot> {
+  const normalizedTermId = await resolveRuleSettingsTermId(termId)
+  if (!normalizedTermId) return createDefaultSnapshot()
+  activeRuleSettingsTermId = normalizedTermId
+  const local = loadRuleSettingsSnapshot(normalizedTermId)
   if (ruleSettingsSource !== 'api') {
     return local
   }
 
-  const endpoint = withAccountQuery(`${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}`)
+  const endpoint = scopedRuleSettingsEndpoint(normalizedTermId)
   try {
     const response = await fetch(endpoint, { method: 'GET', headers: authHeaders() })
     if (!response.ok) {
@@ -988,8 +1029,11 @@ export async function hydrateRuleSettingsSnapshotFromApi(): Promise<RuleSettings
     const apiSavedAt = snapshotSavedAt(payload)
     const localSavedAt = snapshotSavedAt(local)
     if (apiSavedAt > localSavedAt) {
-      localStorage.setItem(withAccountStorageKey(RULE_SETTINGS_STORAGE_KEY), JSON.stringify(payload))
-      return loadRuleSettingsSnapshot()
+      localStorage.setItem(
+        withAccountStorageKey(scopedRuleSettingsStorageKey(normalizedTermId)),
+        JSON.stringify({ ...(payload as Record<string, unknown>), _termId: normalizedTermId })
+      )
+      return loadRuleSettingsSnapshot(normalizedTermId)
     }
     return local
   } catch (error) {

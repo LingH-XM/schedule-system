@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { EditPen, Iphone } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import {
@@ -17,8 +18,10 @@ import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 import { getCurrentUser } from '../../services/auth'
 import { basicDataRepository, type Campus } from '../../services/basicDataRepository'
 import type { AuthRole } from '../../types/auth'
+import { sortGradeLabels } from '../../utils/gradeOrder'
 
 const loading = ref(true)
+const router = useRouter()
 const saving = ref(false)
 const dialogVisible = ref(false)
 const passwordDialogVisible = ref(false)
@@ -61,7 +64,7 @@ const passwordForm = reactive({
 
 const columnWidths = computed(() => {
   const selection = 48
-  const action = 228
+  const action = isSuperAdmin.value ? 300 : 228
   const available = Math.max(tableWidth.value - selection - action, 0)
   const min = {
     account: 168,
@@ -118,7 +121,7 @@ function formatScope(user: ManagedUser): { campuses: string; grades: string } {
     return { campuses: '全部校区', grades: '全部年级' }
   }
   const campusIds = [...new Set((user.scopes ?? []).map((scope) => scope.campusId))]
-  const gradeValues = [...new Set((user.scopes ?? []).map((scope) => scope.grade))]
+  const gradeValues = sortGradeLabels((user.scopes ?? []).map((scope) => scope.grade))
   const resolvedCampusNames = campusIds
     .map((id) => campuses.value.find((campus) => campus.id === id)?.name)
     .filter((name): name is string => Boolean(name))
@@ -217,7 +220,7 @@ function openEditDialog(user: ManagedUser): void {
   form.phone = user.phone ?? ''
   form.role = user.role
   form.campusIds = [...new Set(user.scopes.map((scope) => scope.campusId).filter((value) => value !== '*'))]
-  form.grades = [...new Set(user.scopes.map((scope) => scope.grade).filter((value) => value !== '*'))]
+  form.grades = sortGradeLabels(user.scopes.map((scope) => scope.grade).filter((value) => value !== '*'))
   errorMessage.value = ''
   editingUsername.value = user.username
   dialogVisible.value = true
@@ -269,7 +272,7 @@ async function submitPhoneBinding(): Promise<void> {
       role: user.role,
       permissions: user.permissions,
       campusIds: [...new Set(user.scopes.map((scope) => scope.campusId))],
-      grades: [...new Set(user.scopes.map((scope) => scope.grade))]
+      grades: sortGradeLabels(user.scopes.map((scope) => scope.grade))
     })
     if (!result.ok) {
       errorMessage.value = result.reason === 'PHONE_EXISTS' ? '该手机号已被其他账户绑定' : '绑定手机号失败'
@@ -583,7 +586,7 @@ onMounted(() => {
   void loadUsers()
   void Promise.resolve(basicDataRepository.load()).then((snapshot) => {
     campuses.value = Array.isArray(snapshot?.campuses) ? snapshot.campuses : []
-    grades.value = [...new Set((snapshot?.classRecords ?? []).map((item) => item.grade).filter(Boolean))]
+    grades.value = sortGradeLabels((snapshot?.classRecords ?? []).map((item) => item.grade))
   })
 })
 
@@ -598,7 +601,7 @@ onBeforeUnmount(() => {
   <article v-else class="panel user-management-panel">
     <div class="user-management-head">
       <div>
-        <h1>账户管理</h1>
+        <h1>{{ isSuperAdmin ? '学校账户' : '子账户管理' }}</h1>
         <p>{{ isSuperAdmin ? '管理学校和学校管理员账户。' : '新增子账户，并限定可管理的校区、年级和功能。' }}</p>
       </div>
       <el-button v-if="activeView === 'active'" type="primary" @click="openCreateDialog">
@@ -729,6 +732,7 @@ onBeforeUnmount(() => {
                 {{ row.isActive ? '停用' : '启用' }}
               </el-button>
               <el-button link type="primary" @click="openPasswordDialog(row)">重置密码</el-button>
+              <el-button v-if="isSuperAdmin" link type="primary" @click="router.push({ name: 'schoolFeatures', query: { schoolId: row.schoolId } })">功能配置</el-button>
               <el-button
                 link
                 type="danger"
@@ -756,7 +760,7 @@ onBeforeUnmount(() => {
     >
       <el-form label-position="top" class="user-management-form">
         <div v-if="!editingUsername" class="user-management-static-tags">
-          <el-tag effect="light" round>账号：系统自动生成</el-tag>
+          <el-tag effect="light" round>{{ isSuperAdmin ? '学校账号：系统自动生成' : '账号：系统自动生成（tch 开头）' }}</el-tag>
           <el-tag effect="light" round>初始密码：111111</el-tag>
         </div>
         <el-form-item v-if="isSuperAdmin" label="学校名称" required>

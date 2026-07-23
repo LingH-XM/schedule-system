@@ -1269,8 +1269,18 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .plan-card-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.plan-rename-btn.el-button {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 !important;
+  font-size: 18px;
 }
 
 .progress-row {
@@ -2216,8 +2226,15 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .teaching-info-matrix {
-  min-width: 860px;
   table-layout: fixed;
+}
+
+.teaching-info-matrix col.teaching-info-class-col {
+  width: 88px;
+}
+
+.teaching-info-matrix col.teaching-info-head-teacher-col {
+  width: 150px;
 }
 
 .teaching-info-matrix th,
@@ -2236,20 +2253,15 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .teaching-info-matrix .sticky-col {
-  width: 132px;
-  min-width: 132px;
+  width: 88px;
+  min-width: 88px;
+  max-width: 88px;
 }
 
 .teaching-info-matrix th:nth-child(2),
 .teaching-info-matrix td:nth-child(2) {
-  width: 90px;
-  min-width: 90px;
-}
-
-.teaching-info-matrix th:nth-child(n + 3),
-.teaching-info-matrix td:nth-child(n + 3) {
-  width: 72px;
-  min-width: 72px;
+  width: 150px;
+  min-width: 150px;
 }
 
 .teaching-info-matrix th {
@@ -2478,15 +2490,21 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .lesson-cycle-setting-field {
   display: grid;
-  flex: 0 0 280px;
+  flex: 0 0 380px;
   gap: 7px;
   color: #40577f;
   font-size: 13px;
   font-weight: 600;
 }
 
+.lesson-cycle-setting-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .lesson-cycle-term-select {
-  width: 280px;
+  width: 290px;
   max-width: 100%;
 }
 
@@ -2800,6 +2818,16 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .class-hours-batch-item .class-hours-cell-select {
   width: 100%;
+}
+
+.class-hours-batch-item .el-select__wrapper:hover .el-select__caret {
+  color: var(--el-color-danger);
+}
+
+.class-hours-batch-item .el-select__wrapper:hover .el-select__caret svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
 }
 
 .class-hours-actions .el-button {
@@ -3151,6 +3179,15 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
     width: 100%;
   }
 
+  .lesson-cycle-setting-control {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lesson-cycle-setting-control .el-button {
+    width: 100%;
+  }
+
   .lesson-cycle-current-data {
     grid-template-columns: 1fr;
   }
@@ -3443,6 +3480,9 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .class-tab-lock-btn {
   position: static;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   justify-self: center;
   width: 24px;
   min-width: 0 !important;
@@ -3459,6 +3499,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   color: #8b99b1 !important;
   box-shadow: none !important;
   outline: 0 !important;
+  transform: translateY(-2px);
 }
 
 .class-tab-lock-btn::before,
@@ -3489,7 +3530,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .class-tab-lock-btn .el-icon {
   font-size: 16px;
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .el-class-tabs .el-radio-group {
@@ -3517,15 +3558,18 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   line-height: 1;
   text-align: center;
   font-weight: 600;
+  vertical-align: middle;
   box-shadow: none !important;
   outline: 0;
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .el-class-tabs .el-radio-button,
 .el-class-tabs .el-radio-button:focus,
 .el-class-tabs .el-radio-button:focus-visible {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   height: 32px;
   border: 0 !important;
@@ -3674,6 +3718,71 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   margin: 0 0 12px;
   color: #61718f;
   font-size: 14px;
+}
+
+.publish-scope-section {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.publish-scope-title {
+  color: #2c4168;
+  font-size: 14px;
+}
+
+.publish-scope-options.el-radio-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.publish-scope-options .el-radio.is-bordered {
+  width: 100%;
+  height: auto;
+  min-height: 64px;
+  margin: 0;
+  padding: 10px 12px;
+  align-items: flex-start;
+  border-radius: 10px;
+}
+
+.publish-scope-options .el-radio.is-bordered.is-checked {
+  border-color: var(--primary-soft);
+  background: var(--primary-selected);
+}
+
+.publish-scope-options .el-radio__input {
+  margin-top: 3px;
+}
+
+.publish-scope-options .el-radio__label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding-left: 8px;
+  white-space: normal;
+}
+
+.publish-scope-options .el-radio__label span {
+  color: #2c4168;
+  font-weight: 700;
+}
+
+.publish-scope-options .el-radio__label small {
+  overflow: hidden;
+  color: #8290aa;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.publish-scope-hint {
+  margin: 0;
+  color: #61718f;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .publish-type-list {
@@ -4181,10 +4290,12 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   margin-bottom: 8px;
 }
 
-.board-title {
+.board-title,
+.teacher-head h3 {
   font-size: 16px;
   color: #2f3f61;
   font-weight: 600;
+  line-height: 1.2;
 }
 
 .board-active-tag {
@@ -4564,10 +4675,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .teacher-head h3 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #2f3f61;
-  line-height: 1.2;
 }
 
 .teacher-head label {
@@ -6896,10 +7003,23 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   color: #5a6e96;
 }
 
-.tm-publish-tip {
-  margin: 0 0 10px;
-  color: #8a98b8;
-  font-size: 13px;
+.tm-empty-published {
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.tm-empty-published .el-empty {
+  padding: 48px 24px;
+}
+
+.tm-empty-published .el-empty__description p {
+  color: var(--text-muted);
+  font-size: 15px;
 }
 
 .tm-table .el-table__cell {

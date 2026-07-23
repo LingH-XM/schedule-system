@@ -2,7 +2,7 @@ import { BadRequestException, Body, Controller, ForbiddenException, Get, Inject,
 import { AuthGuard, requireAuth } from './auth.guard.js'
 import { hasPermission, type AuthenticatedRequest } from './auth.types.js'
 import { JsonStorageService } from './json-storage.service.js'
-import { normalizeProfile, sanitizePlanId } from './types.js'
+import { buildTermScopedPlanId, normalizeProfile } from './types.js'
 
 @Controller()
 @UseGuards(AuthGuard)
@@ -13,7 +13,8 @@ export class RuleSettingsController {
   async getScoped(
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
-    @Query('planId') planIdParam?: string
+    @Query('planId') planIdParam?: string,
+    @Query('termId') termIdParam?: string
   ) {
     const auth = requireAuth(request)
     if (!hasPermission(auth, 'rules.read')) throw new ForbiddenException('没有查看排课规则的权限')
@@ -21,7 +22,9 @@ export class RuleSettingsController {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    const planId = sanitizePlanId(planIdParam)
+    const termId = String(termIdParam || '').trim()
+    if (!termId) throw new BadRequestException('termId is required')
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     return this.storage.read(auth.schoolId, profile, planId, 'rule-settings')
   }
 
@@ -30,6 +33,7 @@ export class RuleSettingsController {
     @Req() request: AuthenticatedRequest,
     @Param('profile') profileParam: string,
     @Query('planId') planIdParam: string | undefined,
+    @Query('termId') termIdParam: string | undefined,
     @Body() body: unknown
   ) {
     const auth = requireAuth(request)
@@ -38,20 +42,23 @@ export class RuleSettingsController {
       throw new BadRequestException('profile must be test or prod')
     }
     const profile = normalizeProfile(profileParam)
-    return this.write(auth.schoolId, profile, planIdParam, body, 'rule-settings')
+    return this.write(auth.schoolId, profile, planIdParam, termIdParam, body, 'rule-settings')
   }
 
   private async write(
     schoolId: string,
     profile: 'test' | 'prod',
     planIdParam: string | undefined,
+    termIdParam: string | undefined,
     body: unknown,
     resource: 'rule-settings'
   ) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Invalid payload: expected JSON object')
     }
-    const planId = sanitizePlanId(planIdParam)
+    const termId = String(termIdParam || '').trim()
+    if (!termId) throw new BadRequestException('termId is required')
+    const planId = buildTermScopedPlanId(planIdParam, termId)
     const payload = {
       ...(body as Record<string, unknown>),
       _savedAt:
@@ -60,6 +67,6 @@ export class RuleSettingsController {
           : Date.now()
     }
     await this.storage.write(schoolId, profile, planId, resource, payload)
-    return { ok: true, schoolId, profile, planId, resource }
+    return { ok: true, schoolId, profile, planId, termId, resource }
   }
 }

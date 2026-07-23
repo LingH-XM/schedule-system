@@ -183,6 +183,7 @@ const BASIC_DATA_API_PATH = `/api/${apiProfile}/basic-data`
 const basicDataSource = (import.meta.env.VITE_BASIC_DATA_SOURCE ?? 'api').toLowerCase()
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/$/, '')
 const planId = (import.meta.env.VITE_BASIC_DATA_PLAN_ID ?? 'default').trim() || 'default'
+let apiSaveQueue: Promise<void> = Promise.resolve()
 
 function isValidSnapshotPayload(payload: unknown): payload is Partial<BasicDataSnapshot> {
   if (!payload || typeof payload !== 'object') return false
@@ -222,33 +223,40 @@ export const basicDataApiRepository: BasicDataRepository = {
       }
       const payload = (await response.json()) as unknown
       if (!isValidSnapshotPayload(payload)) {
-        return null
+        return basicDataLocalRepository.load()
       }
       const apiData = payload as Partial<BasicDataSnapshot>
       return apiData
     } catch (error) {
       console.warn('[BasicDataRepository] API 读取失败。', error)
-      return null
+      return basicDataLocalRepository.load()
     }
   },
 
-  async save(snapshot) {
-    const enriched: BasicDataSnapshot = {
-      ...snapshot,
-      _savedAt: Date.now()
-    }
+  save(snapshot) {
+    const immutableSnapshot = JSON.parse(JSON.stringify(snapshot)) as BasicDataSnapshot
+    apiSaveQueue = apiSaveQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const enriched: BasicDataSnapshot = {
+          ...immutableSnapshot,
+          _savedAt: Date.now()
+        }
 
-    const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
-    const response = await fetch(endpoint, {
-      method: 'PUT',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(enriched)
-    })
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-    // Keep local as a read fallback mirror only after API success.
-    basicDataLocalRepository.save(enriched)
+        const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
+        const response = await fetch(endpoint, {
+          method: 'PUT',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(enriched)
+        })
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        // Keep a local mirror after API success so the last confirmed snapshot
+        // remains available when the API is temporarily unreachable.
+        basicDataLocalRepository.save(enriched)
+      })
+    return apiSaveQueue
   }
 }
 

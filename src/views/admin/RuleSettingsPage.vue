@@ -2,6 +2,7 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { notify } from '../../utils/notify'
+import { sortGradeLabels } from '../../utils/gradeOrder'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 import {
   cloneCourseDefaultConfig,
@@ -80,6 +81,7 @@ type CourseCombineRule = CombineCourseRuleRecord
 
 type OddEvenRule = OddEvenRuleRecord
 type AdminBaseSnapshot = {
+  selectedTerm: string
   campuses: Campus[]
   classRecords: ClassRecord[]
   classHourRows: ClassHourRow[]
@@ -170,13 +172,14 @@ const teacherRuleCards: CommonRuleGuide[] = [
   }
 ]
 
-const activeStep = ref('course-default')
+const activeStep = ref('course-common')
 const selectedCommonRuleId = ref('course-main')
 const selectedTeacherRuleId = ref('teacher-ban')
 const adminBaseLoading = ref(false)
 const adminBaseLoadedAt = ref(0)
 const rulesReady = ref(false)
 const adminBaseSnapshot = ref<AdminBaseSnapshot>({
+  selectedTerm: '',
   campuses: [],
   classRecords: [],
   classHourRows: [],
@@ -192,7 +195,7 @@ const campusOptions = computed(() => adminBaseSnapshot.value.campuses.map((item)
 const campusIdByName = computed(() => new Map(adminBaseSnapshot.value.campuses.map((item) => [item.name, item.id] as const)))
 const gradeOptions = computed(() => {
   const set = new Set(adminBaseSnapshot.value.classRecords.map((item) => item.grade).filter(Boolean))
-  return ['全部年级', ...Array.from(set)]
+  return ['全部年级', ...sortGradeLabels(set)]
 })
 
 const selectedCampus = ref('')
@@ -315,10 +318,31 @@ function cloneConsecutiveSettingMap(map: ConsecutiveSettingMap | undefined): Con
 }
 
 const ruleSettingsSnapshot = loadRuleSettingsSnapshot()
+function cloneRuleSettingsValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+const persistedRuleSettingsSnapshot = ref<RuleSettingsSnapshot>(cloneRuleSettingsValue(ruleSettingsSnapshot))
+
+function persistRuleSettingsSections(patch: Partial<RuleSettingsSnapshot>): void {
+  if (!rulesReady.value || !adminBaseSnapshot.value.selectedTerm) {
+    notify.warning('当前学年学期尚未准备完成，规则暂未保存。')
+    return
+  }
+  const nextSnapshot = {
+    ...cloneRuleSettingsValue(persistedRuleSettingsSnapshot.value),
+    ...cloneRuleSettingsValue(patch),
+    version: persistedRuleSettingsSnapshot.value.version || 2,
+    _termId: adminBaseSnapshot.value.selectedTerm
+  } as RuleSettingsSnapshot
+  persistedRuleSettingsSnapshot.value = cloneRuleSettingsValue(nextSnapshot)
+  saveRuleSettingsSnapshot(nextSnapshot, adminBaseSnapshot.value.selectedTerm)
+}
+
 const fixedPointRules = ref<GlobalFixedPointRecord[]>(cloneFixedPointRules(ruleSettingsSnapshot.globalFixedPoints))
 const fixedPointDraftRules = ref<GlobalFixedPointRecord[]>(cloneFixedPointRules(ruleSettingsSnapshot.globalFixedPoints))
 const fallbackBanSubjects = ['语文', '数学', '英语', '物理', '化学', '生物', '历史', '政治', '地理', '音乐', '美术', '信息']
-const defaultMainSubjects = ['语文', '数学', '英语']
+const defaultMainSubjects = ['语文', '数学', '英语', '科学']
 const activeBanSubject = ref('语文')
 const courseSlotMode = ref<'area' | 'ban'>('area')
 const selectedConsecutiveType = ref('正课')
@@ -470,7 +494,7 @@ const combineGradeOptions = computed(() => {
     if (!campusId) return false
     return item.campusId === campusId
   })
-  const grades = Array.from(new Set(classList.map((item) => item.grade).filter(Boolean)))
+  const grades = sortGradeLabels(classList.map((item) => item.grade))
   return ['全部年级', ...grades]
 })
 const combineCourseOptions = computed(() => [
@@ -511,13 +535,10 @@ const combineDialogCampusOptions = computed(() => campusOptions.value)
 const combineDialogGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(combineForm.campus)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const combineDialogClassOptions = computed(() => {
@@ -572,7 +593,7 @@ const oddEvenGradeOptions = computed(() => {
     if (!campusId) return false
     return item.campusId === campusId
   })
-  const grades = Array.from(new Set(classes.map((item) => item.grade).filter(Boolean)))
+  const grades = sortGradeLabels(classes.map((item) => item.grade))
   return ['全部年级', ...grades]
 })
 const oddEvenCourseOptions = computed(() => [
@@ -599,6 +620,7 @@ const selectedWeightGrade = ref('')
 const selectedMainCampus = ref('')
 const selectedMainGrade = ref('')
 const selectedMainSubjects = ref<string[]>([])
+const checkedMainSubjects = ref<string[]>([])
 const selectedRelationCampus = ref('全部校区')
 const selectedRelationGrade = ref('全部年级')
 const selectedRelationType = ref<'全部关系' | '前后互斥' | '同天互斥'>('全部关系')
@@ -631,6 +653,7 @@ const courseDefaultRows: Array<{ key: CourseDefaultRuleKey; label: string; optio
 ]
 
 function applyRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
+  persistedRuleSettingsSnapshot.value = cloneRuleSettingsValue(snapshot)
   fixedPointRules.value = cloneFixedPointRules(snapshot.globalFixedPoints)
   fixedPointDraftRules.value = cloneFixedPointRules(snapshot.globalFixedPoints)
   oddEvenRules.value = Array.isArray(snapshot.oddEvenRules) ? [...snapshot.oddEvenRules] : []
@@ -751,13 +774,10 @@ const weightCampusOptions = computed(() => campusOptions.value)
 const weightGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedWeightCampus.value)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 
@@ -803,13 +823,10 @@ const mainCampusOptions = computed(() => campusOptions.value)
 const mainGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedMainCampus.value)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const mainSubjectOptions = computed(() => {
@@ -832,7 +849,7 @@ const relationGradeOptions = computed(() => {
     if (!campusId) return false
     return item.campusId === campusId
   })
-  return ['全部年级', ...Array.from(new Set(classes.map((item) => item.grade).filter(Boolean)))]
+  return ['全部年级', ...sortGradeLabels(classes.map((item) => item.grade))]
 })
 const relationCourseOptions = computed(() => {
   const list = Array.from(new Set(adminBaseSnapshot.value.courses.map((item) => item.name).filter(Boolean)))
@@ -841,13 +858,10 @@ const relationCourseOptions = computed(() => {
 const relationDialogGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(relationForm.campus)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const filteredCourseRelationRules = computed(() =>
@@ -913,6 +927,7 @@ function getDefaultMainSubjects(): string[] {
 }
 
 function loadCurrentMainSecondarySelection(): void {
+  checkedMainSubjects.value = []
   if (!selectedMainCampus.value || !selectedMainGrade.value) {
     selectedMainSubjects.value = getDefaultMainSubjects()
     return
@@ -928,10 +943,18 @@ function loadCurrentMainSecondarySelection(): void {
 }
 
 function clearCurrentMainSecondary(): void {
-  const key = mainRuleKey(selectedMainCampus.value, selectedMainGrade.value)
-  mainSecondaryRules.value = mainSecondaryRules.value.filter((item) => mainRuleKey(item.campus, item.grade) !== key)
-  selectedMainSubjects.value = []
-  notify.success('已清空当前年级主副科设置。')
+  if (checkedMainSubjects.value.length === 0) return
+  const checkedSet = new Set(checkedMainSubjects.value)
+  selectedMainSubjects.value = selectedMainSubjects.value.filter((item) => !checkedSet.has(item))
+  checkedMainSubjects.value = []
+  notify.info('已清空勾选的主科草稿，点击保存后生效。')
+}
+
+function handleMainSubjectsCheckedChange(checkedValues: Array<string | number>): void {
+  const selectedSet = new Set(selectedMainSubjects.value)
+  checkedMainSubjects.value = checkedValues
+    .map((item) => String(item))
+    .filter((item) => selectedSet.has(item))
 }
 
 function saveCurrentMainSecondary(): void {
@@ -944,31 +967,40 @@ function saveCurrentMainSecondary(): void {
   const mainSubjects = allSubjects.filter((item) => selectedMainSubjects.value.includes(item))
   const secondarySubjects = allSubjects.filter((item) => !mainSubjects.includes(item))
   const rest = mainSecondaryRules.value.filter((item) => mainRuleKey(item.campus, item.grade) !== key)
+  const nextRule: MainSecondaryRuleRecord = {
+    id: `ms-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+    campus: selectedMainCampus.value,
+    grade: selectedMainGrade.value,
+    mainSubjects,
+    secondarySubjects
+  }
   mainSecondaryRules.value = [
     ...rest,
-    {
-      id: `ms-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-      campus: selectedMainCampus.value,
-      grade: selectedMainGrade.value,
-      mainSubjects,
-      secondarySubjects
-    }
+    nextRule
   ]
+  persistRuleSettingsSections({
+    mainSecondaryRules: [
+      ...(persistedRuleSettingsSnapshot.value.mainSecondaryRules || [])
+        .filter((item) => mainRuleKey(item.campus, item.grade) !== key),
+      nextRule
+    ]
+  })
   notify.success('主副科设置已保存。')
 }
 
 function resetCourseDefaultConfig(): void {
   courseDefaultConfig.value = cloneCourseDefaultConfig()
-  notify.success('默认规则已恢复。')
+  notify.info('已恢复默认规则草稿，点击保存后生效。')
 }
 
 function saveCourseDefaultConfig(): void {
+  persistRuleSettingsSections({ courseDefaultConfig: courseDefaultConfig.value })
   notify.success('默认规则已保存。')
 }
 
 function resetRuleWeightConfig(): void {
   ruleWeightConfig.value = JSON.parse(JSON.stringify(defaultRuleWeightConfig)) as RuleWeightConfig
-  notify.success('规则权重已恢复默认。')
+  notify.info('已恢复默认权重草稿，点击保存后生效。')
 }
 
 function ruleWeightKey(campus: string, grade: string): string {
@@ -1052,6 +1084,7 @@ function saveRuleWeightConfig(): void {
       config: JSON.parse(JSON.stringify(ruleWeightConfig.value))
     }
   ]
+  persistRuleSettingsSections({ ruleWeightConfigs: ruleWeightConfigs.value })
   notify.success(`规则权重已保存（${selectedWeightCampus.value} / ${selectedWeightGrade.value}）。`)
 }
 
@@ -1063,13 +1096,10 @@ function openCreateRelationDialog(): void {
   const campusId = campusIdByName.value.get(relationForm.campus)
   relationForm.grade = selectedRelationGrade.value === '全部年级'
     ? (campusId
-        ? Array.from(
-          new Set(
-            adminBaseSnapshot.value.classRecords
-              .filter((item) => item.campusId === campusId)
-              .map((item) => item.grade)
-              .filter(Boolean)
-          )
+        ? sortGradeLabels(
+          adminBaseSnapshot.value.classRecords
+            .filter((item) => item.campusId === campusId)
+            .map((item) => item.grade)
         )[0] || ''
         : '')
     : selectedRelationGrade.value
@@ -1126,27 +1156,45 @@ function saveRelationRule(): void {
   }
 
   if (relationDialogMode.value === 'create') {
+    const nextRule: CourseRelationRuleRecord = {
+      id: `cr-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+      campus,
+      grade,
+      courseA,
+      courseB,
+      relationType
+    }
     courseRelationRules.value = [
       ...courseRelationRules.value,
-      {
-        id: `cr-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-        campus,
-        grade,
-        courseA,
-        courseB,
-        relationType
-      }
+      nextRule
     ]
+    persistRuleSettingsSections({
+      courseRelationRules: [...(persistedRuleSettingsSnapshot.value.courseRelationRules || []), nextRule]
+    })
     relationDialogVisible.value = false
     notify.success('课程关系已添加。')
     return
   }
 
+  const nextRule: CourseRelationRuleRecord = {
+    id: relationEditingId.value,
+    campus,
+    grade,
+    courseA,
+    courseB,
+    relationType
+  }
   courseRelationRules.value = courseRelationRules.value.map((item) =>
     item.id === relationEditingId.value
-      ? { ...item, campus, grade, courseA, courseB, relationType }
+      ? nextRule
       : item
   )
+  const savedRules = persistedRuleSettingsSnapshot.value.courseRelationRules || []
+  persistRuleSettingsSections({
+    courseRelationRules: savedRules.some((item) => item.id === relationEditingId.value)
+      ? savedRules.map((item) => item.id === relationEditingId.value ? nextRule : item)
+      : [...savedRules, nextRule]
+  })
   relationDialogVisible.value = false
   notify.success('课程关系已更新。')
 }
@@ -1169,6 +1217,9 @@ async function removeRelationRule(ruleId: string): Promise<void> {
     return
   }
   courseRelationRules.value = courseRelationRules.value.filter((item) => item.id !== ruleId)
+  const nextSavedRules = (persistedRuleSettingsSnapshot.value.courseRelationRules || [])
+    .filter((item) => item.id !== ruleId)
+  persistRuleSettingsSections({ courseRelationRules: nextSavedRules })
 }
 
 function clearRelationRules(): void {
@@ -1178,6 +1229,23 @@ function clearRelationRules(): void {
     if (selectedRelationType.value !== '全部关系' && item.relationType !== selectedRelationType.value) return true
     return false
   })
+  notify.info('已清空当前筛选范围的课程关系草稿，点击保存后生效。')
+}
+
+function saveRelationRules(): void {
+  const matchesCurrentScope = (item: CourseRelationRuleRecord) => {
+    if (selectedRelationCampus.value !== '全部校区' && item.campus !== selectedRelationCampus.value) return false
+    if (selectedRelationGrade.value !== '全部年级' && item.grade !== selectedRelationGrade.value) return false
+    if (selectedRelationType.value !== '全部关系' && item.relationType !== selectedRelationType.value) return false
+    return true
+  }
+  const savedRules = persistedRuleSettingsSnapshot.value.courseRelationRules || []
+  const nextRules = [
+    ...savedRules.filter((item) => !matchesCurrentScope(item)),
+    ...courseRelationRules.value.filter(matchesCurrentScope)
+  ]
+  persistRuleSettingsSections({ courseRelationRules: nextRules })
+  notify.success('课程关系规则已保存。')
 }
 
 function openCreateTeacherMutualDialog(type: 'mutual' | 'mentoring' = 'mutual'): void {
@@ -1223,6 +1291,7 @@ function saveTeacherMutualRule(): void {
       },
       ...teacherMutualRules.value
     ]
+    persistRuleSettingsSections({ teacherMutualRules: teacherMutualRules.value })
     teacherMutualDialogVisible.value = false
     notify.success('教师关系已添加。')
     return
@@ -1238,6 +1307,7 @@ function saveTeacherMutualRule(): void {
         }
       : item
   )
+  persistRuleSettingsSections({ teacherMutualRules: teacherMutualRules.value })
   teacherMutualDialogVisible.value = false
   notify.success('教师关系已更新。')
 }
@@ -1256,6 +1326,7 @@ async function deleteTeacherMutualRule(ruleId: string): Promise<void> {
     return
   }
   teacherMutualRules.value = teacherMutualRules.value.filter((item) => item.id !== ruleId)
+  persistRuleSettingsSections({ teacherMutualRules: teacherMutualRules.value })
 }
 
 const oddEvenDialogVisible = ref(false)
@@ -1274,13 +1345,10 @@ const oddEvenDialogCampusOptions = computed(() => campusOptions.value)
 const oddEvenDialogGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(oddEvenForm.campus)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const oddEvenDialogClassOptions = computed(() => {
@@ -1323,13 +1391,10 @@ const areaCampusOptions = computed(() => campusOptions.value)
 const areaGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedAreaCampus.value)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const areaSubjectOptions = computed(() => {
@@ -1543,6 +1608,10 @@ async function deleteCourseBanRule(rule: CourseBanRuleRecord): Promise<void> {
     return
   }
   courseBanRules.value = courseBanRules.value.filter((item) => item.id !== rule.id)
+  persistRuleSettingsSections({
+    courseBanRules: (persistedRuleSettingsSnapshot.value.courseBanRules || [])
+      .filter((item) => item.id !== rule.id)
+  })
   notify.success('禁止排课设置已删除。')
 }
 
@@ -1550,13 +1619,10 @@ const banCampusOptions = computed(() => campusOptions.value)
 const banGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedBanCampus.value)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const banSubjectOptions = computed(() => {
@@ -1739,10 +1805,19 @@ function clearCurrentBanRule(): void {
     return false
   })
   courseBanRules.value = rest
-  notify.success('已清空当前课程禁止排课设置。')
+  notify.info('已清空当前课程禁止排课草稿，点击保存后生效。')
 }
 
 function saveCurrentBanRule(): void {
+  const matchesCurrentScope = (item: CourseBanRuleRecord) =>
+    item.campus === selectedBanCampus.value
+    && item.grade === selectedBanGrade.value
+    && item.subject === activeBanSubject.value
+  const nextRules = [
+    ...(persistedRuleSettingsSnapshot.value.courseBanRules || []).filter((item) => !matchesCurrentScope(item)),
+    ...courseBanRules.value.filter(matchesCurrentScope)
+  ]
+  persistRuleSettingsSections({ courseBanRules: nextRules })
   notify.success('课程禁止排课规则已保存。')
 }
 
@@ -1779,13 +1854,10 @@ const consecutiveCampusOptions = computed(() => campusOptions.value)
 const consecutiveGradeOptions = computed(() => {
   const campusId = campusIdByName.value.get(selectedConsecutiveCampus.value)
   if (!campusId) return [] as string[]
-  return Array.from(
-    new Set(
-      adminBaseSnapshot.value.classRecords
-        .filter((item) => item.campusId === campusId)
-        .map((item) => item.grade)
-        .filter(Boolean)
-    )
+  return sortGradeLabels(
+    adminBaseSnapshot.value.classRecords
+      .filter((item) => item.campusId === campusId)
+      .map((item) => item.grade)
   )
 })
 const consecutiveClassOptions = computed(() => {
@@ -1822,32 +1894,19 @@ function consecutiveSettingKey(): string {
   ].join('::')
 }
 
-function ensureCurrentConsecutiveSetting(): ConsecutiveSetting {
-  const key = consecutiveSettingKey()
-  const existing = consecutiveSettingMap.value[key]
-  if (existing) return existing
-  const created: ConsecutiveSetting = {
-    defaultRule: {
-      weeklyConsecutiveCount: null,
-      preferredDays: []
-    },
-    classOverrides: {}
-  }
-  consecutiveSettingMap.value = {
-    ...consecutiveSettingMap.value,
-    [key]: created
-  }
-  return created
-}
+const consecutiveDraftWeeklyCount = ref<number | null>(null)
+const consecutiveDraftPreferredDays = ref<string[]>([])
 
-const currentConsecutiveSetting = computed(() => ensureCurrentConsecutiveSetting())
-const currentConsecutiveRule = computed(() => {
-  if (selectedConsecutiveClass.value === '全部班级') {
-    return currentConsecutiveSetting.value.defaultRule
-  }
-  return currentConsecutiveSetting.value.classOverrides[selectedConsecutiveClass.value]
-    ?? currentConsecutiveSetting.value.defaultRule
-})
+function loadCurrentConsecutiveDraft(): void {
+  const setting = consecutiveSettingMap.value[consecutiveSettingKey()]
+  const className = selectedConsecutiveClass.value
+  const rule = className === '全部班级'
+    ? setting?.defaultRule
+    : setting?.classOverrides[className] ?? setting?.defaultRule
+
+  consecutiveDraftWeeklyCount.value = rule?.weeklyConsecutiveCount ?? null
+  consecutiveDraftPreferredDays.value = Array.isArray(rule?.preferredDays) ? [...rule.preferredDays] : []
+}
 const configuredConsecutiveRows = computed(() => {
   const rows: Array<{
     id: string
@@ -1898,60 +1957,75 @@ const configuredConsecutiveWeeklyTotal = computed(() =>
   configuredConsecutiveRows.value.reduce((total, row) => total + (row.weeklyConsecutiveCount ?? 0), 0)
 )
 const consecutiveDefaultWeeklyCount = computed<number | undefined>({
-  get: () => currentConsecutiveRule.value.weeklyConsecutiveCount ?? undefined,
-  set: (value) => updateWeeklyConsecutiveCount(value ?? null)
+  get: () => consecutiveDraftWeeklyCount.value ?? undefined,
+  set: (value) => {
+    consecutiveDraftWeeklyCount.value = normalizeLimitedInt(value ?? null, 0, 5)
+  }
 })
 const consecutiveDefaultPreferredDays = computed<string[]>({
-  get: () => [...(currentConsecutiveRule.value.preferredDays || [])],
-  set: (value) => updatePreferredDays((value || []).map((item) => String(item || '')))
+  get: () => [...consecutiveDraftPreferredDays.value],
+  set: (value) => {
+    consecutiveDraftPreferredDays.value = Array.from(
+      new Set((value || []).map((item) => String(item || '')).filter((day) => consecutiveWeekdays.includes(day)))
+    )
+  }
 })
 
-function ensureSelectedConsecutiveRule(): ConsecutiveRuleValue {
-  const current = ensureCurrentConsecutiveSetting()
-  const className = selectedConsecutiveClass.value
-  if (className === '全部班级') return current.defaultRule
-  const existing = current.classOverrides[className]
-  if (existing) return existing
-  const created: ConsecutiveRuleValue = {
-    weeklyConsecutiveCount: current.defaultRule.weeklyConsecutiveCount,
-    preferredDays: [...(current.defaultRule.preferredDays || [])]
-  }
-  current.classOverrides = {
-    ...current.classOverrides,
-    [className]: created
-  }
-  return created
-}
-
-function updateWeeklyConsecutiveCount(value?: number | null): void {
-  const rule = ensureSelectedConsecutiveRule()
-  rule.weeklyConsecutiveCount = normalizeLimitedInt(value ?? null, 0, 5)
-}
-
-function updatePreferredDays(days: string[]): void {
-  const rule = ensureSelectedConsecutiveRule()
-  const normalized = Array.from(new Set(days.filter((day) => consecutiveWeekdays.includes(day))))
-  rule.preferredDays = normalized
-}
-
 function clearCurrentConsecutiveSetting(): void {
-  const current = ensureCurrentConsecutiveSetting()
-  const className = selectedConsecutiveClass.value
-  if (className === '全部班级') {
-    current.defaultRule = {
-      weeklyConsecutiveCount: null,
-      preferredDays: []
-    }
-  } else {
-    const next = { ...current.classOverrides }
-    delete next[className]
-    current.classOverrides = next
-  }
+  consecutiveDraftWeeklyCount.value = null
+  consecutiveDraftPreferredDays.value = []
+  notify.info('已清空当前连堂课草稿，点击保存后生效。')
 }
 
 function saveCurrentConsecutiveSetting(): void {
-  ensureCurrentConsecutiveSetting()
-  notify.success('连堂课规则已暂存。')
+  if (!selectedConsecutiveCampus.value || !selectedConsecutiveGrade.value || !activeConsecutiveSubject.value) {
+    notify.warning('请先选择校区、年级和课程。')
+    return
+  }
+
+  const key = consecutiveSettingKey()
+  const existing = consecutiveSettingMap.value[key]
+  const nextSetting: ConsecutiveSetting = {
+    defaultRule: {
+      weeklyConsecutiveCount: existing?.defaultRule.weeklyConsecutiveCount ?? null,
+      preferredDays: [...(existing?.defaultRule.preferredDays || [])]
+    },
+    classOverrides: Object.fromEntries(
+      Object.entries(existing?.classOverrides || {}).map(([className, rule]) => [
+        className,
+        {
+          weeklyConsecutiveCount: rule.weeklyConsecutiveCount,
+          preferredDays: [...(rule.preferredDays || [])]
+        }
+      ])
+    )
+  }
+  const nextRule: ConsecutiveRuleValue = {
+    weeklyConsecutiveCount: normalizeLimitedInt(consecutiveDraftWeeklyCount.value, 0, 5),
+    preferredDays: [...consecutiveDraftPreferredDays.value]
+  }
+  const className = selectedConsecutiveClass.value
+  const hasRuleValue = nextRule.weeklyConsecutiveCount != null || nextRule.preferredDays.length > 0
+
+  if (className === '全部班级') {
+    nextSetting.defaultRule = nextRule
+  } else if (hasRuleValue) {
+    nextSetting.classOverrides[className] = nextRule
+  } else {
+    delete nextSetting.classOverrides[className]
+  }
+
+  const hasDefaultRule = nextSetting.defaultRule.weeklyConsecutiveCount != null
+    || nextSetting.defaultRule.preferredDays.length > 0
+  const nextMap = { ...consecutiveSettingMap.value }
+  if (!hasDefaultRule && Object.keys(nextSetting.classOverrides).length === 0) {
+    delete nextMap[key]
+  } else {
+    nextMap[key] = nextSetting
+  }
+  consecutiveSettingMap.value = nextMap
+  persistRuleSettingsSections({ consecutiveSettings: consecutiveSettingMap.value })
+  notify.success(hasRuleValue ? '连堂课规则已保存。' : '连堂课规则已清除。')
 }
 
 async function removeConfiguredConsecutiveRule(row: (typeof configuredConsecutiveRows.value)[number]): Promise<void> {
@@ -1991,6 +2065,7 @@ async function removeConfiguredConsecutiveRule(row: (typeof configuredConsecutiv
     nextMap[row.settingKey] = nextSetting
   }
   consecutiveSettingMap.value = nextMap
+  persistRuleSettingsSections({ consecutiveSettings: consecutiveSettingMap.value })
   notify.success('连堂课设置已删除。')
 }
 
@@ -2047,6 +2122,10 @@ async function deleteCourseAreaRule(rule: CourseAreaRuleRecord): Promise<void> {
     return
   }
   courseAreaRules.value = courseAreaRules.value.filter((item) => item.id !== rule.id)
+  persistRuleSettingsSections({
+    courseAreaRules: (persistedRuleSettingsSnapshot.value.courseAreaRules || [])
+      .filter((item) => item.id !== rule.id)
+  })
   notify.success('允许排课设置已删除。')
 }
 
@@ -2094,10 +2173,19 @@ function clearCurrentAreaRule(): void {
     return false
   })
   courseAreaRules.value = rest
-  notify.success('已清空当前课程允许排课设置。')
+  notify.info('已清空当前课程允许排课草稿，点击保存后生效。')
 }
 
 function saveCurrentAreaRule(): void {
+  const matchesCurrentScope = (item: CourseAreaRuleRecord) =>
+    item.campus === selectedAreaCampus.value
+    && item.grade === selectedAreaGrade.value
+    && item.subject === activeAreaSubject.value
+  const nextRules = [
+    ...(persistedRuleSettingsSnapshot.value.courseAreaRules || []).filter((item) => !matchesCurrentScope(item)),
+    ...courseAreaRules.value.filter(matchesCurrentScope)
+  ]
+  persistRuleSettingsSections({ courseAreaRules: nextRules })
   notify.success('课程允许排课规则已保存。')
 }
 
@@ -2204,6 +2292,7 @@ async function setFixedPointForSlots(targetSlots: string[], fallbackPeriod: numb
 
 function clearFixedPoints(): void {
   fixedPointDraftRules.value = fixedPointDraftRules.value.filter((item) => !fixedPointScopeFilter(item))
+  notify.info('已清空当前范围固定点草稿，点击保存后生效。')
 }
 
 function onFixedGradeCheckChange(grade: string, checked: boolean): void {
@@ -2297,13 +2386,19 @@ function onFixedContextDelete(): void {
   const targets = [...fixedPointContextMenu.slots]
   closeFixedPointContextMenu()
   deleteFixedPointsBySlots(targets)
-  notify.success(`已删除 ${targets.length} 个固定点格子。`)
+  notify.info(`已从草稿删除 ${targets.length} 个固定点格子，点击保存后生效。`)
 }
 
 const handleCloseFixedPointContextMenu = () => closeFixedPointContextMenu()
 
 function saveFixedPoints(): void {
-  fixedPointRules.value = cloneFixedPointRules(fixedPointDraftRules.value)
+  const savedRules = persistedRuleSettingsSnapshot.value.globalFixedPoints || []
+  const nextRules = [
+    ...savedRules.filter((item) => !fixedPointScopeFilter(item)),
+    ...fixedPointDraftRules.value.filter(fixedPointScopeFilter)
+  ]
+  fixedPointRules.value = cloneFixedPointRules(nextRules)
+  persistRuleSettingsSections({ globalFixedPoints: nextRules })
   notify.success('全局固定点规则已保存。')
 }
 
@@ -2354,6 +2449,20 @@ function clearTeacherBan(): void {
     ...teacherBanMap.value,
     [target]: {}
   }
+}
+
+function saveTeacherBanRules(): void {
+  const target = currentTeacherTargetKey()
+  if (!target) {
+    notify.warning(teacherBanMode.value === 'single' ? '请先选择老师。' : '请先选择教研与活动分组。')
+    return
+  }
+  const nextRules = {
+    ...(persistedRuleSettingsSnapshot.value.teacherBanRules || {}),
+    [target]: { ...(teacherBanMap.value[target] || {}) }
+  }
+  persistRuleSettingsSections({ teacherBanRules: nextRules })
+  notify.success('教师不排课规则已保存。')
 }
 
 const currentGroupMemberText = computed(() => {
@@ -2442,7 +2551,8 @@ function applyTeacherHourRuleForTeacher(rule: TeacherHourRule): void {
   }
 
   upsertTeacherHourRule(campus, grade, subject, rule.teacherId, rule.teacherName, values)
-  notify.success(rule.isAllTeachers ? '默认规则已更新。' : `已应用「${rule.teacherName}」个人设置。`)
+  persistRuleSettingsSections({ teacherHourRules: teacherHourRuleStore.value })
+  notify.success(rule.isAllTeachers ? '默认规则已保存。' : `已保存「${rule.teacherName}」个人设置。`)
 }
 
 async function applyTeacherHourRuleToSubjectTeachers(): Promise<void> {
@@ -2483,7 +2593,8 @@ async function applyTeacherHourRuleToSubjectTeachers(): Promise<void> {
       )
   )
   upsertTeacherHourRule(campus, grade, subject, '', '全部教师', values)
-  notify.success(`已应用到全部（${targets.length}位教师）。`)
+  persistRuleSettingsSections({ teacherHourRules: teacherHourRuleStore.value })
+  notify.success(`已保存全部教师规则（${targets.length}位教师）。`)
 }
 
 function clearTeacherHourBatchRule(): void {
@@ -2495,6 +2606,7 @@ function clearTeacherHourBatchRule(): void {
   teacherHourRuleStore.value = teacherHourRuleStore.value.filter(
     (item) => !(item.campus === campus && item.grade === grade && item.subject === subject && item.teacherId === '')
   )
+  persistRuleSettingsSections({ teacherHourRules: teacherHourRuleStore.value })
   notify.success('已清空当前范围批量设置。')
 }
 
@@ -2526,6 +2638,7 @@ async function clearTeacherHourRule(rule: TeacherHourRule): Promise<void> {
         item.teacherId === rule.teacherId
       )
   )
+  persistRuleSettingsSections({ teacherHourRules: teacherHourRuleStore.value })
   notify.success('已清空个人设置，恢复继承默认规则。')
 }
 
@@ -2566,6 +2679,7 @@ async function deleteSelectedCombineRules(): Promise<void> {
   combineRules.value = combineRules.value.filter((item) => !idSet.has(item.id))
   selectedCombineRuleIds.value = []
   normalizeCombineRuleOrder()
+  persistRuleSettingsSections({ combineRules: combineRules.value })
   notify.success(`已删除 ${ids.length} 条合班课规则。`)
 }
 
@@ -2627,7 +2741,9 @@ function submitCombineDialog(): void {
       course
     })
     normalizeCombineRuleOrder()
+    persistRuleSettingsSections({ combineRules: combineRules.value })
     closeCombineDialog()
+    notify.success('合班课规则已保存。')
     return
   }
 
@@ -2643,7 +2759,9 @@ function submitCombineDialog(): void {
       : item
   )
   normalizeCombineRuleOrder()
+  persistRuleSettingsSections({ combineRules: combineRules.value })
   closeCombineDialog()
+  notify.success('合班课规则已保存。')
 }
 
 async function deleteCombineRule(ruleId: string): Promise<void> {
@@ -2661,34 +2779,12 @@ async function deleteCombineRule(ruleId: string): Promise<void> {
   }
   combineRules.value = combineRules.value.filter((item) => item.id !== ruleId)
   normalizeCombineRuleOrder()
+  persistRuleSettingsSections({ combineRules: combineRules.value })
 }
 
 function addCombineRule(): void {
   openCreateCombineDialog()
 }
-
-watch(
-  [fixedPointRules, oddEvenRules, combineRules, courseAreaRules, courseBanRules, mainSecondaryRules, courseRelationRules, teacherMutualRules, teacherBanMap, teacherHourRuleStore, consecutiveSettingMap, courseDefaultConfig, ruleWeightConfigs],
-  ([nextFixedPoints, nextOddEvenRules, nextCombineRules, nextCourseAreaRules, nextCourseBanRules, nextMainSecondaryRules, nextCourseRelationRules, nextTeacherMutualRules, nextTeacherBanRules, nextTeacherHourRules, nextConsecutiveSettings, nextCourseDefaultConfig, nextRuleWeightConfigs]) => {
-    saveRuleSettingsSnapshot({
-      version: 1,
-      globalFixedPoints: nextFixedPoints,
-      oddEvenRules: nextOddEvenRules,
-      combineRules: nextCombineRules,
-      courseAreaRules: nextCourseAreaRules,
-      courseBanRules: nextCourseBanRules,
-      mainSecondaryRules: nextMainSecondaryRules,
-      courseRelationRules: nextCourseRelationRules,
-      teacherMutualRules: nextTeacherMutualRules,
-      teacherBanRules: nextTeacherBanRules,
-      teacherHourRules: nextTeacherHourRules,
-      consecutiveSettings: nextConsecutiveSettings,
-      courseDefaultConfig: nextCourseDefaultConfig,
-      ruleWeightConfigs: nextRuleWeightConfigs
-    })
-  },
-  { deep: true }
-)
 
 function openCreateOddEvenDialog(): void {
   oddEvenDialogMode.value = 'create'
@@ -2749,7 +2845,9 @@ function submitOddEvenDialog(): void {
       oddCourse,
       evenCourse
     })
+    persistRuleSettingsSections({ oddEvenRules: oddEvenRules.value })
     closeOddEvenDialog()
+    notify.success('单双周规则已保存。')
     return
   }
 
@@ -2766,7 +2864,9 @@ function submitOddEvenDialog(): void {
       : item
   )
 
+  persistRuleSettingsSections({ oddEvenRules: oddEvenRules.value })
   closeOddEvenDialog()
+  notify.success('单双周规则已保存。')
 }
 
 async function deleteOddEvenRule(ruleId: string): Promise<void> {
@@ -2783,6 +2883,7 @@ async function deleteOddEvenRule(ruleId: string): Promise<void> {
     return
   }
   oddEvenRules.value = oddEvenRules.value.filter((item) => item.id !== ruleId)
+  persistRuleSettingsSections({ oddEvenRules: oddEvenRules.value })
 }
 
 async function clearOddEvenRules(): Promise<void> {
@@ -2798,6 +2899,7 @@ async function clearOddEvenRules(): Promise<void> {
     return
   }
   oddEvenRules.value = []
+  persistRuleSettingsSections({ oddEvenRules: oddEvenRules.value })
 }
 
 function addOddEvenRule(): void {
@@ -2826,6 +2928,7 @@ const menuActiveStep = computed(() => {
 function normalizeAdminBaseSnapshot(payload: unknown): AdminBaseSnapshot {
   if (!payload || typeof payload !== 'object') {
     return {
+      selectedTerm: '',
       campuses: [],
       classRecords: [],
       classHourRows: [],
@@ -2840,6 +2943,7 @@ function normalizeAdminBaseSnapshot(payload: unknown): AdminBaseSnapshot {
 
   const typed = payload as Partial<AdminBaseSnapshot>
   return {
+    selectedTerm: String(typed.selectedTerm || '').trim(),
     campuses: Array.isArray(typed.campuses) ? typed.campuses : [],
     classRecords: Array.isArray(typed.classRecords) ? typed.classRecords : [],
     classHourRows: Array.isArray((typed as { classHourRows?: unknown[] }).classHourRows)
@@ -3060,6 +3164,19 @@ watch(consecutiveSubjectOptions, (items) => {
   }
 }, { immediate: true })
 
+watch(
+  [
+    consecutiveSettingMap,
+    selectedConsecutiveCampus,
+    selectedConsecutiveGrade,
+    selectedConsecutiveClass,
+    activeConsecutiveSubject,
+    selectedConsecutiveType
+  ],
+  loadCurrentConsecutiveDraft,
+  { immediate: true }
+)
+
 watch(combineCampusOptions, (items) => {
   if (!items.includes(selectedCombineCampus.value)) {
     selectedCombineCampus.value = '全部校区'
@@ -3201,13 +3318,10 @@ watch(
   () => {
     const campusId = campusIdByName.value.get(relationForm.campus)
     const grades = campusId
-      ? Array.from(
-        new Set(
-          adminBaseSnapshot.value.classRecords
-            .filter((item) => item.campusId === campusId)
-            .map((item) => item.grade)
-            .filter(Boolean)
-        )
+      ? sortGradeLabels(
+        adminBaseSnapshot.value.classRecords
+          .filter((item) => item.campusId === campusId)
+          .map((item) => item.grade)
       )
       : []
     if (!grades.includes(relationForm.grade)) {
@@ -3357,9 +3471,9 @@ onMounted(() => {
   window.addEventListener('focus', handleWindowFocusSyncAdminBase)
   void (async () => {
     try {
-      const latestSnapshot = await hydrateRuleSettingsSnapshotFromApi()
-      applyRuleSettingsSnapshot(latestSnapshot)
       await refreshAdminBaseOverviewIfNeeded(true)
+      const latestSnapshot = await hydrateRuleSettingsSnapshotFromApi(adminBaseSnapshot.value.selectedTerm)
+      applyRuleSettingsSnapshot(latestSnapshot)
     } finally {
       rulesReady.value = true
     }
@@ -3524,7 +3638,7 @@ watch(
   <article v-else class="panel rule-settings-page">
     <header class="rule-module-head">
       <div>
-        <h1>排课规则设置</h1>
+        <h1>排课规则</h1>
         <p>统一管理课程规则、教师规则和高级设置。</p>
       </div>
     </header>
@@ -3691,7 +3805,13 @@ watch(
             <p>根据当前校区与年级基础数据，设置学科为主科或副科。</p>
           </div>
           <div class="rule-head-actions">
-            <el-button size="small" @click="clearCurrentMainSecondary">清空</el-button>
+            <el-button
+              size="small"
+              :disabled="checkedMainSubjects.length === 0"
+              @click="clearCurrentMainSecondary"
+            >
+              清空勾选
+            </el-button>
             <el-button type="primary" size="small" @click="saveCurrentMainSecondary">保存</el-button>
           </div>
         </header>
@@ -3714,6 +3834,7 @@ watch(
               :titles="['副科', '主科']"
               :button-texts="['移到副科', '移到主科']"
               :props="{ key: 'key', label: 'label' }"
+              @right-check-change="handleMainSubjectsCheckedChange"
             />
           </div>
 
@@ -4302,8 +4423,9 @@ watch(
             <p>规则介绍：前后互斥指两个课程不能被安排在相邻节次。同天互斥指所选课程不能被安排在同一天。</p>
           </div>
           <div class="rule-head-actions">
-            <el-button size="small" @click="clearRelationRules">清空</el-button>
+            <el-button size="small" @click="clearRelationRules">清空草稿</el-button>
             <el-button type="primary" size="small" @click="openCreateRelationDialog">添加</el-button>
+            <el-button type="primary" size="small" @click="saveRelationRules">保存</el-button>
           </div>
         </header>
 
@@ -4798,7 +4920,10 @@ watch(
               <span class="group-members">成员：{{ currentGroupMemberText }}</span>
             </template>
 
-            <el-button link type="primary" @click="clearTeacherBan">清空当前对象设置</el-button>
+            <div class="rule-head-actions">
+              <el-button link type="primary" @click="clearTeacherBan">清空草稿</el-button>
+              <el-button type="primary" size="small" @click="saveTeacherBanRules">保存</el-button>
+            </div>
           </div>
 
           <div class="fixed-table-wrap">
@@ -4896,7 +5021,7 @@ watch(
                       type="primary"
                       @click="applyTeacherHourRuleToSubjectTeachers"
                     >
-                      应用
+                      保存
                     </el-button>
                     <el-button
                       v-if="rule.isAllTeachers"
@@ -4912,7 +5037,7 @@ watch(
                       type="primary"
                       @click="applyTeacherHourRuleForTeacher(rule)"
                     >
-                      应用
+                      保存
                     </el-button>
                     <el-button
                       v-if="!rule.isAllTeachers"
