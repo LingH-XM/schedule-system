@@ -1,4 +1,4 @@
-import { withAccountQuery } from './accountContext'
+import { withSchoolQuery } from './accountContext'
 import { authHeaders } from './auth'
 
 export type ApiSolverLesson = {
@@ -218,7 +218,7 @@ export async function solveSmartByApi(
   payload: ApiSmartSolveRequest,
   onQueueUpdate?: (update: ApiSmartQueueUpdate) => void
 ): Promise<ApiSmartSolveEnvelope> {
-  const response = await fetch(withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart`)), {
+  const response = await fetch(withSchoolQuery(endpoint(`/api/${profile}/scheduler/solve-smart`)), {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
@@ -254,7 +254,7 @@ export async function solveSmartByApi(
 
     await sleep(1000)
     const statusResponse = await fetch(
-      withAccountQuery(endpoint(`/api/${profile}/scheduler/solve-smart/${encodeURIComponent(job.id)}`)),
+      withSchoolQuery(endpoint(`/api/${profile}/scheduler/solve-smart/${encodeURIComponent(job.id)}`)),
       { method: 'GET', headers: authHeaders() }
     )
     if (!statusResponse.ok) throw await readApiError(statusResponse)

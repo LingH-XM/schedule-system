@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import * as XLSX from 'xlsx'
-import { basicDataRepository } from '../../services/basicDataRepository'
+import { basicDataRepository, sortCampusesByOrder } from '../../services/basicDataRepository'
 import { loadWorkbenchPersistSnapshot, saveWorkbenchPersistSnapshot } from '../../services/scheduleStateRepository'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabelFromParts } from '../../utils/termLabel'
@@ -29,6 +29,7 @@ type BaseGroup = {
 
 type Campus = {
   id: string
+  orderNo: number
   schoolName: string
   name: string
   system: boolean
@@ -81,7 +82,7 @@ type TeacherRecord = {
 type GroupRecord = {
   id: string
   name: string
-  type: '教研与活动分组' | '学科组' | '会议组' | '协作组'
+  type: string
   campusId: string
   memberNames: string[]
   remark: string
@@ -380,6 +381,7 @@ const schoolYears = ref<SchoolYear[]>([
 ])
 
 const TARGET_SCHOOL_YEAR_START = 2027
+const MAX_SCHOOL_YEAR_RECORDS = 5
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/
 const DEFAULT_SUBJECT_GROUP_MAP: Record<string, string> = {
   语文: '语文组',
@@ -636,7 +638,13 @@ function normalizeGroupRecords(list: GroupRecord[]): GroupRecord[] {
       if (!name) return null
       const campusId = String(item.campusId ?? '').trim()
       if (!campusId) return null
-      const type = item.type === '学科组' ? '教研与活动分组' : item.type
+      const rawType = String(item.type ?? '').trim()
+      const type =
+        rawType === '学科组' || rawType === '教研与活动分组'
+          ? '教研'
+          : rawType === '会议组'
+            ? '会议'
+            : rawType || '教研'
       const memberNames = Array.from(
         new Set(
           (Array.isArray(item.memberNames) ? item.memberNames : [])
@@ -680,7 +688,7 @@ function syncActivityGroupsFromRealData(): void {
   campusIds.forEach((campusId) => {
     subjectSet.forEach((subject) => {
       const groupName = getDefaultSubjectGroup(subject)
-      const key = groupRecordKey({ campusId, type: '教研与活动分组', name: groupName })
+      const key = groupRecordKey({ campusId, type: '教研', name: groupName })
       generatedKeys.add(key)
       const previous = currentMap.get(key)
       const members = Array.from(
@@ -696,7 +704,7 @@ function syncActivityGroupsFromRealData(): void {
       generated.push({
         id: previous?.id || `group-auto-${campusId}-${subject}`,
         name: groupName,
-        type: '教研与活动分组',
+        type: '教研',
         campusId,
         memberNames: members,
         remark: previous?.remark || ''
@@ -705,7 +713,7 @@ function syncActivityGroupsFromRealData(): void {
   })
 
   const manualGroups = normalizedCurrent.filter((item) => {
-    if (item.type !== '教研与活动分组') return true
+    if (item.type !== '教研') return true
     return !generatedKeys.has(groupRecordKey(item))
   })
 
@@ -718,8 +726,9 @@ function syncActivityGroupsFromRealData(): void {
 }
 
 function normalizeCampuses(list: Campus[]): Campus[] {
-  return list
-    .map((item) => {
+  return sortCampusesByOrder(
+    list
+      .map((item) => {
       const raw = (item as Campus & { educationSystem?: string }).educationSystem
       const educationSystem = EDUCATION_SYSTEM_OPTIONS.includes(raw as Campus['educationSystem'])
         ? (raw as Campus['educationSystem'])
@@ -730,10 +739,11 @@ function normalizeCampuses(list: Campus[]): Campus[] {
         schoolName,
         educationSystem
       }
-    })
-    .filter((item) => {
-      return !item.system
-    })
+      })
+      .filter((item) => {
+        return !item.system
+      })
+  ) as Campus[]
 }
 
 function normalizeCourseRecords(list: CourseItem[]): CourseItem[] {
@@ -798,7 +808,7 @@ function ensureSchoolYearsToTarget(list: SchoolYear[]): SchoolYear[] {
     result.push(buildSchoolYearByStart(maxStart))
   }
 
-  return result
+  return result.slice(-MAX_SCHOOL_YEAR_RECORDS)
 }
 
 function formatTodayDate(): string {
@@ -979,6 +989,7 @@ const courseTableRef = ref<TableInstance | null>(null)
 const selectedCourseIds = ref<string[]>([])
 const classTableRef = ref<TableInstance | null>(null)
 const classTableCampusId = ref('__all__')
+const classTableStage = ref('__all__')
 const classTableGradeFilter = ref<string[]>([])
 const classPage = ref(1)
 const classPageSize = ref(15)
@@ -1158,6 +1169,20 @@ const fixedActivityPlacementOptions = Array.from({ length: 12 }, (_, index) => {
 const selectedHoursCampusId = ref('')
 const selectedHoursEducationSystem = ref<Campus['educationSystem']>('九年一贯制')
 const currentHoursCampus = computed(() => campuses.value.find((item) => item.id === selectedHoursCampusId.value) ?? null)
+const selectedHoursStageOptions = computed(() => {
+  const educationSystem = currentHoursCampus.value?.educationSystem
+  if (educationSystem === '九年一贯制') {
+    return [
+      { label: '全部学段', value: '九年一贯制' as const },
+      { label: '小学', value: '小学' as const },
+      { label: '初中', value: '初中' as const }
+    ]
+  }
+  if (educationSystem === '初中') {
+    return [{ label: '初中', value: '初中' as const }]
+  }
+  return [{ label: '小学', value: '小学' as const }]
+})
 const resetGradeTarget = ref('__all__')
 const classHoursResetDialogVisible = ref(false)
 const classHoursResetFinalVisible = ref(false)
@@ -1935,6 +1960,12 @@ async function verifyCoursePersistence(successMessage: string): Promise<void> {
 }
 
 function loadBasicDataSnapshot(): void {
+  const finishWithLoadError = (error: unknown): void => {
+    console.error('[BasicDataRepository] 读取失败', error)
+    basicDataHydrated.value = true
+    notify.error('基础数据加载失败，请稍后刷新重试。')
+  }
+
   const applySnapshot = (parsed: Partial<BasicDataSnapshot> | null): void => {
     if (!parsed) {
       basicDataHydrated.value = true
@@ -2053,13 +2084,17 @@ function loadBasicDataSnapshot(): void {
     basicDataHydrated.value = true
   }
 
-  const loaded = basicDataRepository.load()
-  if (loaded instanceof Promise) {
-    void loaded.then((parsed) => applySnapshot(parsed))
-    return
-  }
+  try {
+    const loaded = basicDataRepository.load()
+    if (loaded instanceof Promise) {
+      void loaded.then((parsed) => applySnapshot(parsed)).catch(finishWithLoadError)
+      return
+    }
 
-  applySnapshot(loaded)
+    applySnapshot(loaded)
+  } catch (error) {
+    finishWithLoadError(error)
+  }
 }
 
 loadBasicDataSnapshot()
@@ -2303,7 +2338,7 @@ const currentClassRecords = computed(() => {
     .filter(
       (item) =>
         (classTableCampusId.value === '__all__' ? true : item.campusId === classTableCampusId.value) &&
-        item.stage === classSettingForm.stage
+        (classTableStage.value === '__all__' ? true : item.stage === classTableStage.value)
     )
     .sort((a, b) => {
       const gradeCompare = compareGradeLabels(a.grade, b.grade)
@@ -2334,16 +2369,13 @@ const pagedClassTableView = computed(() => {
 })
 
 const gradeClassStats = computed(() => {
-  const targetCampusId = classSettingForm.campusId
-  const targetStage = classSettingForm.stage
-  const rows = classRecords.value.filter((item) => item.campusId === targetCampusId && item.stage === targetStage)
   const countByGrade = new Map<string, number>()
-  rows.forEach((item) => {
+  classTableView.value.forEach((item) => {
     const key = String(item.grade || '').trim()
     if (!key) return
     countByGrade.set(key, (countByGrade.get(key) || 0) + 1)
   })
-  const stats = gradeOptions.value.map((grade) => ({
+  const stats = sortGradeLabels([...countByGrade.keys()]).map((grade) => ({
     grade,
     count: countByGrade.get(grade) || 0
   }))
@@ -2379,7 +2411,13 @@ watch(
   { immediate: true }
 )
 
-watch([classTableCampusId, classTableGradeFilter], () => {
+watch([classTableCampusId, classTableStage], () => {
+  const validGrades = new Set(classTableGradeFilterOptions.value.map((item) => item.value))
+  classTableGradeFilter.value = classTableGradeFilter.value.filter((grade) => validGrades.has(grade))
+  classPage.value = 1
+})
+
+watch(classTableGradeFilter, () => {
   classPage.value = 1
 })
 
@@ -2428,23 +2466,6 @@ async function batchCreateClasses(): Promise<void> {
   const previous = cloneTermData(classRecords.value)
   classRecords.value = [...classRecords.value, ...newItems]
   const saved = await persistBasicData(`已新增 ${newItems.length} 个班级。`)
-  if (!saved) classRecords.value = previous
-}
-
-async function renameClass(record: ClassRecord): Promise<void> {
-  const className = await askTextInput('修改班级名称', '编辑班级', record.className)
-  if (!className) return
-
-  const previous = cloneTermData(classRecords.value)
-  classRecords.value = classRecords.value.map((item) =>
-    item.id === record.id
-      ? {
-          ...item,
-          className: normalizeClassDisplayName(item.grade, item.classNo, className)
-        }
-      : item
-  )
-  const saved = await persistBasicData('班级名称已更新。')
   if (!saved) classRecords.value = previous
 }
 
@@ -2694,10 +2715,12 @@ const campusDialogMode = ref<'create' | 'edit'>('create')
 const campusEditingId = ref('')
 const campusDialogError = ref('')
 const campusForm = reactive<{
+  orderNo: number
   schoolName: string
   name: string
   educationSystem: Campus['educationSystem']
 }>({
+  orderNo: 1,
   schoolName: '',
   name: '',
   educationSystem: '九年一贯制'
@@ -2707,12 +2730,14 @@ function openCampusDialog(campus?: Campus): void {
   if (campus) {
     campusDialogMode.value = 'edit'
     campusEditingId.value = campus.id
+    campusForm.orderNo = campus.orderNo
     campusForm.schoolName = campus.schoolName
     campusForm.name = campus.name
     campusForm.educationSystem = campus.educationSystem
   } else {
     campusDialogMode.value = 'create'
     campusEditingId.value = ''
+    campusForm.orderNo = Math.max(0, ...campuses.value.map((item) => item.orderNo)) + 1
     campusForm.schoolName = ''
     campusForm.name = ''
     campusForm.educationSystem = '九年一贯制'
@@ -2726,10 +2751,23 @@ function closeCampusDialog(): void {
 }
 
 async function submitCampusDialog(): Promise<void> {
+  const orderNo = Math.floor(Number(campusForm.orderNo))
   const schoolName = campusForm.schoolName.trim()
   const name = campusForm.name.trim() || '本校区'
+  if (!Number.isFinite(orderNo) || orderNo <= 0) {
+    campusDialogError.value = '序号必须是大于 0 的整数。'
+    return
+  }
   if (!schoolName) {
     campusDialogError.value = '请填写学校名称。'
+    return
+  }
+
+  const orderExists = campuses.value.some(
+    (item) => item.orderNo === orderNo && item.id !== campusEditingId.value
+  )
+  if (orderExists) {
+    campusDialogError.value = `序号 ${orderNo} 已被其他校区使用，请更换。`
     return
   }
 
@@ -2746,6 +2784,7 @@ async function submitCampusDialog(): Promise<void> {
       item.id === campusEditingId.value
         ? {
             ...item,
+            orderNo,
             schoolName,
             name,
             educationSystem: campusForm.educationSystem
@@ -2755,12 +2794,14 @@ async function submitCampusDialog(): Promise<void> {
   } else {
     campuses.value.unshift({
       id: `${Date.now()}`,
+      orderNo,
       schoolName,
       name,
       system: false,
       educationSystem: campusForm.educationSystem
     })
   }
+  campuses.value = normalizeCampuses(campuses.value)
   const saved = await persistBasicData(successMessage)
   if (!saved) {
     campuses.value = previous
@@ -4469,7 +4510,7 @@ async function submitEditTeacherDialog(): Promise<void> {
 
 const groupTableRef = ref<TableInstance | null>(null)
 const selectedGroupIds = ref<string[]>([])
-const DEFAULT_GROUP_TYPES = ['教研与活动分组', '会议组', '协作组']
+const DEFAULT_GROUP_TYPES = ['教研', '会议', '活动']
 const groupTypeOptions = computed<string[]>(() =>
   Array.from(new Set([...DEFAULT_GROUP_TYPES, ...groupRecords.value.map((item) => item.type).filter(Boolean)]))
 )
@@ -4488,7 +4529,7 @@ const groupForm = reactive<{
   remark: string
 }>({
   name: '',
-  type: '教研与活动分组',
+  type: '教研',
   campusId: '',
   memberNames: [],
   remark: ''
@@ -4550,7 +4591,7 @@ function openGroupDialog(record?: GroupRecord): void {
     groupDialogMode.value = 'create'
     groupEditingId.value = ''
     groupForm.name = ''
-    groupForm.type = '教研与活动分组'
+    groupForm.type = '教研'
     groupForm.campusId = campuses.value[0]?.id ?? ''
     groupForm.memberNames = []
     groupForm.remark = ''
@@ -4576,7 +4617,7 @@ function editGroupRecord(record: GroupRecord): void {
 async function submitGroupDialog(): Promise<void> {
   const name = groupForm.name.trim()
   const campusId = groupForm.campusId || campuses.value[0]?.id || ''
-  const type = groupForm.type.trim() || '教研与活动分组'
+  const type = groupForm.type.trim() || '教研'
   const remark = groupForm.remark.trim()
   const memberNames = Array.from(new Set(groupForm.memberNames.map((item) => item.trim()).filter(Boolean)))
 
@@ -4673,8 +4714,8 @@ async function removeGroupsBatch(): Promise<void> {
 }
 
 const teachingInfoCampusId = ref('')
+const teachingInfoStage = ref<CourseScope>('小学')
 const teachingInfoGrade = ref('')
-const teachingInfoCycleId = ref('')
 const teachingInfoImportInput = ref<HTMLInputElement | null>(null)
 const teachingInfoImportError = ref('')
 const teachingBatchDialogVisible = ref(false)
@@ -4691,24 +4732,35 @@ const teachingBatchEditingCell = ref<{ rowIndex: number; field: string } | null>
 const teachingBatchClickMemory = ref<{ rowIndex: number; field: string; at: number } | null>(null)
 const TEACHING_BATCH_EDIT_CLICK_INTERVAL = 900
 
+const teachingInfoStageOptions = computed<CourseScope[]>(() => {
+  const stages = Array.from(
+    new Set(
+      classRecords.value
+        .filter((item) => !teachingInfoCampusId.value || item.campusId === teachingInfoCampusId.value)
+        .map((item) => item.stage)
+    )
+  )
+  if (stages.length > 0) {
+    return (['小学', '初中'] as CourseScope[]).filter((stage) => stages.includes(stage))
+  }
+
+  const educationSystem = campuses.value.find((item) => item.id === teachingInfoCampusId.value)?.educationSystem
+  if (educationSystem === '小学' || educationSystem === '初中') return [educationSystem]
+  return ['小学', '初中']
+})
+
 const teachingInfoGradeOptions = computed(() =>
   Array.from(
     new Set(
       classRecords.value
         .filter((item) => !teachingInfoCampusId.value || item.campusId === teachingInfoCampusId.value)
+        .filter((item) => item.stage === teachingInfoStage.value)
         .map((item) => item.grade)
     )
   ).sort(
     compareGradeLabels
   )
 )
-
-const teachingInfoCycleOptions = computed(() => {
-  return teachingCycles.value.map((item, index) => ({
-    value: item.id,
-    label: index === 0 ? `${item.weekRange}(当前)` : item.weekRange
-  }))
-})
 
 function getArrangementWeeklyLessons(classInfo: ClassRecord | null | undefined, courseId: string): number {
   if (!classInfo) return 0
@@ -4746,8 +4798,6 @@ const teachingInfoMatrixClasses = computed(() =>
     .filter((item) => item.campusId === teachingInfoCampusId.value && item.grade === teachingInfoGrade.value)
     .sort((a, b) => a.classNo - b.classNo)
 )
-
-const teachingInfoMatrixStage = computed(() => teachingInfoMatrixClasses.value[0]?.stage ?? null)
 
 const teachingInfoMatrixCourses = computed(() => {
   const courseIds = new Set<string>()
@@ -4850,20 +4900,20 @@ watch(
 )
 
 watch(
-  teachingInfoGradeOptions,
+  teachingInfoStageOptions,
   (items) => {
-    if (!items.includes(teachingInfoGrade.value)) {
-      teachingInfoGrade.value = items[0] ?? ''
+    if (!items.includes(teachingInfoStage.value)) {
+      teachingInfoStage.value = items[0] ?? '小学'
     }
   },
   { immediate: true }
 )
 
 watch(
-  teachingInfoCycleOptions,
+  teachingInfoGradeOptions,
   (items) => {
-    if (!items.some((item) => item.value === teachingInfoCycleId.value)) {
-      teachingInfoCycleId.value = items[0]?.value ?? ''
+    if (!items.includes(teachingInfoGrade.value)) {
+      teachingInfoGrade.value = items[0] ?? ''
     }
   },
   { immediate: true }
@@ -6203,6 +6253,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
 
       <template v-if="activeMenu === 'campus'">
         <el-table class="campus-el-table" :data="campuses" border>
+          <el-table-column prop="orderNo" label="序号" width="90" />
           <el-table-column prop="schoolName" label="学校名称" min-width="180" />
           <el-table-column prop="name" label="校区名称" min-width="180" />
           <el-table-column prop="educationSystem" label="学段学制" min-width="140" />
@@ -6229,6 +6280,9 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
         >
           <el-form label-position="top" class="campus-el-form">
             <div class="campus-editor-grid">
+              <el-form-item label="序号" required>
+                <el-input-number v-model="campusForm.orderNo" :min="1" :step="1" controls-position="right" />
+              </el-form-item>
               <el-form-item label="学校名称" required>
                 <el-input v-model="campusForm.schoolName" placeholder="请输入学校名称" />
               </el-form-item>
@@ -6363,12 +6417,6 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
       <template v-else-if="activeMenu === 'class-setting'">
         <section class="class-setting-panel">
           <div class="class-setting-toolbar">
-            <div class="class-setting-toolbar-head">
-              <div>
-                <h3>生成班级</h3>
-                <p>先设置校区、学段、班级参数，再勾选需要处理的年级后批量生成。</p>
-              </div>
-            </div>
             <el-form label-position="top" class="class-setting-form-inline">
               <div class="class-setting-config-row">
                 <el-form-item label="校区">
@@ -6390,6 +6438,13 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 <el-form-item label="起始班号">
                   <el-input-number v-model="classSettingForm.startNo" :min="1" controls-position="right" />
                 </el-form-item>
+
+                <div class="class-setting-grade-actions">
+                  <span class="class-setting-generate-tip">自动跳过已存在班级</span>
+                  <el-button type="primary" :disabled="classSettingForm.grades.length === 0" @click="batchCreateClasses">
+                    批量生成班级
+                  </el-button>
+                </div>
               </div>
 
               <div class="grade-select class-setting-grade-section">
@@ -6405,29 +6460,12 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                       全选
                     </el-checkbox>
                     <el-checkbox-group v-model="classSettingForm.grades" class="grade-checks">
-                      <el-checkbox v-for="grade in gradeOptions" :key="grade" :label="grade">{{ grade }}</el-checkbox>
+                      <el-checkbox v-for="grade in gradeOptions" :key="grade" :value="grade">{{ grade }}</el-checkbox>
                     </el-checkbox-group>
                   </div>
-                  <el-button type="primary" :disabled="classSettingForm.grades.length === 0" @click="batchCreateClasses">
-                    批量生成班级
-                  </el-button>
                 </div>
               </div>
-
-              <el-form-item class="class-setting-generate-item">
-                <span class="class-setting-generate-tip">生成后会自动跳过已存在的班级。</span>
-              </el-form-item>
             </el-form>
-          </div>
-
-          <div class="class-grade-stats">
-            <span class="class-grade-stats-title">班级统计</span>
-            <div class="class-grade-stats-list">
-              <el-tag v-for="item in gradeClassStats.stats" :key="`stat-${item.grade}`" effect="light">
-                {{ item.grade }} {{ item.count }} 个班
-              </el-tag>
-              <el-tag type="primary" effect="light">合计 {{ gradeClassStats.total }} 个班</el-tag>
-            </div>
           </div>
 
           <div class="class-table-toolbar">
@@ -6435,13 +6473,26 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option label="全部校区" value="__all__" />
               <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
             </el-select>
+            <el-select v-model="classTableStage" class="class-table-filter-select" placeholder="筛选学段">
+              <el-option label="全部学段" value="__all__" />
+              <el-option v-for="stage in stageOptions" :key="stage" :label="stage" :value="stage" />
+            </el-select>
             <el-select v-model="classTableGradeFilter" multiple collapse-tags collapse-tags-tooltip clearable placeholder="筛选年级" class="class-table-filter-select">
               <el-option v-for="item in classTableGradeFilterOptions" :key="item.value" :label="item.text" :value="item.value" />
             </el-select>
             <span class="teaching-info-actions-spacer" />
-            <el-button type="danger" plain :disabled="selectedClassCount === 0" @click="removeClassesBatch">
+            <el-button class="batch-delete-btn" type="danger" plain :disabled="selectedClassCount === 0" @click="removeClassesBatch">
               批量删除（{{ selectedClassCount }}）
             </el-button>
+          </div>
+
+          <div class="class-grade-stats">
+            <div class="class-grade-stats-list">
+              <el-tag v-for="item in gradeClassStats.stats" :key="`stat-${item.grade}`" effect="light">
+                {{ item.grade }} {{ item.count }} 个班
+              </el-tag>
+              <el-tag type="primary" effect="light">合计 {{ gradeClassStats.total }} 个班</el-tag>
+            </div>
           </div>
 
           <el-table
@@ -6457,11 +6508,9 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             </el-table-column>
             <el-table-column prop="stage" label="学段" min-width="100" />
             <el-table-column prop="grade" label="年级" min-width="120" />
-            <el-table-column prop="classNo" label="班号" min-width="90" />
             <el-table-column prop="className" label="班级" min-width="120" />
-            <el-table-column label="操作" min-width="120">
+            <el-table-column label="操作" min-width="90">
               <template #default="{ row }">
-                <el-button type="primary" link @click="renameClass(row)">编辑</el-button>
                 <el-button type="danger" link @click="removeClass(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -6480,10 +6529,6 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             />
           </div>
 
-          <p class="class-setting-tip">
-            当前配置：{{ campuses.find((c) => c.id === classSettingForm.campusId)?.name }} / {{ classSettingForm.stage }} /
-            {{ classSettingForm.grades.join('、') }}
-          </p>
         </section>
       </template>
 
@@ -6504,7 +6549,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option v-for="type in groupTypeOptions" :key="type" :label="type" :value="type" />
             </el-select>
             <span class="teaching-info-actions-spacer" />
-            <el-button type="danger" plain :disabled="selectedGroupCount === 0" @click="removeGroupsBatch">
+            <el-button class="batch-delete-btn" type="danger" plain :disabled="selectedGroupCount === 0" @click="removeGroupsBatch">
               批量删除（{{ selectedGroupCount }}）
             </el-button>
             <el-button type="primary" @click="createGroupRecord">新增分组</el-button>
@@ -6552,6 +6597,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 filterable
                 allow-create
                 default-first-option
+                clearable
                 placeholder="请选择或输入分组类型"
               >
                 <el-option v-for="type in groupTypeOptions" :key="type" :label="type" :value="type" />
@@ -6630,7 +6676,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-button type="primary" plain @click="triggerTeacherImport">数据导入</el-button>
               <span class="teacher-entry-toolbar-divider" aria-hidden="true"></span>
               <el-button type="primary" @click="openCreateTeacherDialog">新增教师</el-button>
-              <el-button type="danger" plain :disabled="selectedTeacherCount === 0" @click="removeTeachersBatch">
+              <el-button class="batch-delete-btn" type="danger" plain :disabled="selectedTeacherCount === 0" @click="removeTeachersBatch">
                 批量删除（{{ selectedTeacherCount }}）
               </el-button>
             </div>
@@ -6748,7 +6794,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
             <el-button type="info" @click="exportRoomData">导出教室</el-button>
             <el-button type="primary" @click="openCreateRoomDialog">新增教室</el-button>
             <el-button type="success" @click="saveRoomEntryData">保存教室</el-button>
-            <el-button type="danger" plain :disabled="selectedRoomCount === 0" @click="removeRoomsBatch">
+            <el-button class="batch-delete-btn" type="danger" plain :disabled="selectedRoomCount === 0" @click="removeRoomsBatch">
               批量删除（{{ selectedRoomCount }}）
             </el-button>
             <input
@@ -6922,7 +6968,7 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option v-for="item in studentClassOptions" :key="item.id" :label="item.className" :value="item.id" />
             </el-select>
             <span class="teaching-info-actions-spacer" />
-            <el-button type="danger" plain :disabled="selectedStudentCount === 0" @click="removeStudentsBatch">
+            <el-button class="batch-delete-btn" type="danger" plain :disabled="selectedStudentCount === 0" @click="removeStudentsBatch">
               批量删除（{{ selectedStudentCount }}）
             </el-button>
             <el-button @click="downloadStudentTemplate">下载模板</el-button>
@@ -7057,20 +7103,20 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
         <section class="teacher-entry-panel">
           <div class="teaching-info-topbar">
             <div class="teaching-info-top-filters">
-              <span>选择校区：</span>
+              <span>校区</span>
               <el-select v-model="teachingInfoCampusId" placeholder="选择校区" class="arrangement-filter-select">
                 <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
               </el-select>
-              <span>当前教学周期：</span>
-              <el-select v-model="teachingInfoCycleId" placeholder="当前教学周期" class="arrangement-filter-select">
-                <el-option v-for="item in teachingInfoCycleOptions" :key="item.value" :label="item.label" :value="item.value" />
+              <span>学段</span>
+              <el-select v-model="teachingInfoStage" placeholder="选择学段" class="arrangement-filter-select">
+                <el-option v-for="item in teachingInfoStageOptions" :key="item" :label="item" :value="item" />
+              </el-select>
+              <span>年级</span>
+              <el-select v-model="teachingInfoGrade" placeholder="选择年级" class="arrangement-filter-select">
+                <el-option v-for="grade in teachingInfoGradeOptions" :key="grade" :label="grade" :value="grade" />
               </el-select>
             </div>
           </div>
-
-          <el-tabs v-model="teachingInfoGrade" class="teaching-info-grade-tabs" type="card">
-            <el-tab-pane v-for="grade in teachingInfoGradeOptions" :key="grade" :label="grade" :name="grade" />
-          </el-tabs>
 
           <div class="teacher-entry-actions">
             <el-button>行政班</el-button>
@@ -7324,12 +7370,9 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
                 <el-button type="primary" @click="exportCourseData">数据导出</el-button>
               </div>
 
-              <div class="course-toolbar-group course-toolbar-group--danger">
-                <span class="course-toolbar-label">危险操作</span>
-                <el-button type="danger" plain :disabled="selectedCourseCount === 0" @click="removeCoursesBatch">
-                  批量删除（{{ selectedCourseCount }}）
-                </el-button>
-              </div>
+              <el-button class="batch-delete-btn course-toolbar-batch-delete" type="danger" plain :disabled="selectedCourseCount === 0" @click="removeCoursesBatch">
+                批量删除（{{ selectedCourseCount }}）
+              </el-button>
             </div>
 
             <input
@@ -7340,7 +7383,6 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               @change="handleCourseImport"
             />
           </div>
-          <p class="dialog-tip">支持上传 Excel/CSV，按模板列顺序导入课程；新增、编辑、删除、导入后会自动保存。</p>
           <p v-if="courseImportError" class="error">{{ courseImportError }}</p>
 
           <el-table
@@ -7433,8 +7475,20 @@ function handleArrangementModeChange(mode: '课程课时' | '教室类型'): voi
               <el-option v-for="term in termOptions" :key="term.value" :label="term.label" :value="term.value" />
             </el-select>
 
+            <el-select v-model="selectedHoursCampusId" class="class-hours-campus-select" placeholder="选择校区">
+              <el-option v-for="campus in campuses" :key="campus.id" :label="campus.name" :value="campus.id" />
+            </el-select>
+
+            <el-select v-model="selectedHoursEducationSystem" class="class-hours-system-select" placeholder="选择学段">
+              <el-option
+                v-for="item in selectedHoursStageOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
+
             <div class="class-hours-context">
-              <span>当前校区：{{ currentHoursCampus?.name ?? '未设置' }}</span>
               <span>学段学制：{{ currentHoursCampus?.educationSystem ?? '未设置' }}</span>
             </div>
           </div>

@@ -1,0 +1,383 @@
+/*
+ * Global typography system
+ *
+ * The application uses seven semantic levels. New pages should consume these
+ * tokens instead of introducing one-off pixel values.
+ *
+ * 12  metadata / captions
+ * 13  helper text / dense labels
+ * 14  body / controls / tables
+ * 16  emphasized body / card titles
+ * 18  subsection titles
+ * 22  section titles
+ * 28  page titles
+ */
+:root {
+  --font-family-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+
+  --font-size-caption: 12px;
+  --font-size-helper: 13px;
+  --font-size-body: 14px;
+  --font-size-emphasis: 16px;
+  --font-size-subtitle: 18px;
+  --font-size-section-title: 22px;
+  --font-size-page-title: 28px;
+  --font-size-display: 40px;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-ui: 1.4;
+  --line-height-body: 1.6;
+
+  --el-font-family: var(--font-family-sans);
+  --el-font-size-extra-small: var(--font-size-caption);
+  --el-font-size-small: var(--font-size-helper);
+  --el-font-size-base: var(--font-size-body);
+  --el-font-size-medium: var(--font-size-body);
+  --el-font-size-large: var(--font-size-emphasis);
+  --el-font-size-extra-large: var(--font-size-subtitle);
+}
+
+html {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body);
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  text-wrap: pretty;
+}
+
+/* Reusable semantic classes for all new screens. */
+.text-page-title {
+  font-size: var(--font-size-page-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.text-section-title {
+  font-size: var(--font-size-section-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.text-subsection-title {
+  font-size: var(--font-size-subtitle);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+.text-card-title,
+.text-emphasis {
+  font-size: var(--font-size-emphasis);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+}
+
+.text-body {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.text-helper {
+  font-size: var(--font-size-helper);
+  line-height: var(--line-height-body);
+}
+
+.text-caption {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+/* Application shell and navigation. */
+.brand {
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-tight);
+}
+
+.sidebar-expand-btn,
+.sidebar-collapse-btn,
+.logout-btn.el-button {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-ui);
+}
+
+.nav-link {
+  font-size: var(--font-size-emphasis);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-ui);
+}
+
+.user-identity-label,
+.header-term-display span,
+.user-identity-role {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+.user-identity-name,
+.header-term-display strong {
+  font-size: var(--font-size-emphasis);
+  line-height: var(--line-height-tight);
+}
+
+/* Page-level titles. */
+.user-management-head h1,
+.plan-header h1,
+.base-main-head h1,
+.rule-module-head h1,
+.teacher-hours-header h1,
+.school-feature-head h1,
+.dashboard-intro h1 {
+  margin-top: 0;
+  font-size: var(--font-size-page-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  letter-spacing: -0.015em;
+}
+
+.user-management-head p,
+.plan-header p,
+.rule-module-head p,
+.teacher-hours-header p,
+.school-feature-head p,
+.dashboard-intro p {
+  margin-top: 7px;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+/* Section, subsection and card titles. */
+.rule-head h1,
+.teaching-info-label,
+.teacher-hours-table-heading h2,
+.tm-schedule-title,
+.plan-card h2 {
+  font-size: var(--font-size-section-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.rule-section h2,
+.course-default-head h3,
+.course-slot-management-heading h3,
+.consecutive-setting-head h3,
+.teacher-mutual-select-panel h4,
+.rule-guide-card h3 {
+  font-size: var(--font-size-subtitle);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+.base-side h2 {
+  font-size: var(--font-size-section-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.base-side li {
+  font-size: var(--font-size-emphasis);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-ui);
+}
+
+.base-side .group-title {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-ui);
+}
+
+.course-pool h3,
+.teacher-board h3,
+.course-pool-head h3,
+.teacher-head h3,
+.tm-card h3,
+.admin-panel-head,
+.consecutive-section-heading h3,
+.rule-weight-hard-item-title,
+.semester-card-title {
+  font-size: var(--font-size-emphasis);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+}
+
+.workbench-plan {
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-tight);
+}
+
+/* Body copy, descriptions and helper text. */
+.rule-head p,
+.rule-guide-desc,
+.consecutive-setting-tip,
+.tm-empty-published .el-empty__description p {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.fixed-hint,
+.consecutive-field-label,
+.consecutive-section-heading p,
+.tm-teaching-cycle-text,
+.user-management-selection-tip,
+.admin-kpi-title,
+.rule-weight-hard-item-desc,
+.rule-weight-tip {
+  font-size: var(--font-size-helper);
+  line-height: var(--line-height-body);
+}
+
+.state,
+.account-summary-meta,
+.account-scope-value,
+.account-time-subtext {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+/* Controls: one size across native controls and Element Plus. */
+.el-button,
+.el-input__inner,
+.el-select__placeholder,
+.el-select__selected-item,
+.el-form-item__label,
+.el-radio__label,
+.el-checkbox__label,
+.el-tabs__item,
+.el-menu-item,
+.el-dropdown-menu__item,
+.el-pagination,
+.el-popper,
+.el-dialog,
+.el-message-box {
+  font-size: var(--font-size-body);
+}
+
+.admin-content .el-button:not(.is-link):not(.is-text),
+.base-main-head-actions > .el-button,
+.base-main-head-actions > .el-button-group > .el-button,
+.teacher-entry-actions > .el-button,
+.teacher-entry-actions > .el-button-group > .el-button,
+.teacher-entry-toolbar-actions .el-button,
+.arrangement-head-tools .el-button {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-ui);
+}
+
+.rule-primary-menu.el-menu--horizontal > .el-menu-item,
+.common-rule-tabs .el-tabs__item,
+.teacher-ban-tabs .el-tabs__item {
+  font-size: var(--font-size-body);
+}
+
+.el-dialog__title,
+.el-message-box__title,
+.semester-el-dialog .el-dialog__title {
+  font-size: var(--font-size-subtitle);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+/* Data tables: headers and values share one readable base size. */
+.el-table {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-ui);
+}
+
+.el-table th.el-table__cell > .cell,
+.account-table.el-table th.el-table__cell > .cell {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+}
+
+.el-table td.el-table__cell > .cell,
+.account-summary-title,
+.account-time-text,
+.tm-lesson-cell {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-ui);
+}
+
+.el-tag {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+/* Metrics use tabular numerals but remain on the same hierarchy. */
+.admin-kpi-card strong,
+.teacher-hours-metric strong {
+  font-size: var(--font-size-page-title);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* The help center is editorial, but still uses the same scale. */
+.guide-main h1 {
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-tight);
+}
+
+.guide-main h2,
+.guide-section-heading h2 {
+  font-size: var(--font-size-section-title);
+  line-height: var(--line-height-tight);
+}
+
+.guide-main h3 {
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-tight);
+}
+
+.guide-main p,
+.guide-main li {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+/* Login is the only display-oriented surface; controls still follow the UI scale. */
+.login-heading p,
+.login-form,
+.login-submit.el-button,
+.login-recovery-link {
+  font-size: var(--font-size-body);
+}
+
+@media (max-width: 640px) {
+  :root {
+    --font-size-page-title: 24px;
+    --font-size-section-title: 20px;
+  }
+
+  .user-identity-name,
+  .header-term-display strong {
+    font-size: var(--font-size-body);
+  }
+}

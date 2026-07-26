@@ -23,6 +23,3 @@ export function withSchoolQuery(path: string): string {
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}schoolId=${encodeURIComponent(currentSchoolId())}`
 }
-
-/** @deprecated The server derives schoolId from the signed login token. */
-export const withAccountQuery = withSchoolQuery

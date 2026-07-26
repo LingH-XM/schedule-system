@@ -1,0 +1,119 @@
+/*
+ * Global in-page navigation system
+ *
+ * Top-level module switches share one visual tier regardless of whether the
+ * underlying component is Element Plus Tabs or Menu.
+ */
+:root {
+  --module-nav-height: 50px;
+  --module-nav-item-min-width: 112px;
+  --module-nav-item-x: 18px;
+  --module-nav-font-size: 15px;
+  --module-nav-indicator-height: 2px;
+}
+
+/* Rule settings uses Element Plus Menu. */
+.rule-primary-menu {
+  height: var(--module-nav-height);
+}
+
+.rule-primary-menu.el-menu--horizontal > .el-menu-item {
+  min-width: var(--module-nav-item-min-width);
+  height: var(--module-nav-height);
+  padding: 0 var(--module-nav-item-x);
+  color: var(--text-secondary);
+  font-size: var(--module-nav-font-size);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--module-nav-height);
+}
+
+.rule-primary-menu.el-menu--horizontal > .el-menu-item:hover,
+.rule-primary-menu.el-menu--horizontal > .el-menu-item:focus,
+.rule-primary-menu.el-menu--horizontal > .el-menu-item.is-active {
+  color: var(--text-link);
+}
+
+/* Timetable management uses Element Plus Tabs. */
+.tm-topbar {
+  min-height: var(--module-nav-height);
+  align-items: stretch;
+  border-bottom: 1px solid var(--table-border);
+}
+
+.tm-type-tabs {
+  min-width: 0;
+}
+
+.tm-type-tabs .el-tabs__header,
+.tm-type-tabs .el-tabs__nav-wrap,
+.tm-type-tabs .el-tabs__nav-scroll,
+.tm-type-tabs .el-tabs__nav {
+  height: var(--module-nav-height);
+}
+
+.tm-type-tabs .el-tabs__header {
+  margin: 0;
+}
+
+.tm-type-tabs .el-tabs__nav-wrap::after {
+  height: 1px;
+  background: var(--table-border);
+}
+
+.tm-type-tabs .el-tabs__item {
+  min-width: var(--module-nav-item-min-width);
+  height: var(--module-nav-height);
+  padding: 0 var(--module-nav-item-x);
+  color: var(--text-secondary);
+  font-size: var(--module-nav-font-size);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--module-nav-height);
+  text-align: center;
+}
+
+.tm-type-tabs .el-tabs__item:hover,
+.tm-type-tabs .el-tabs__item.is-active {
+  color: var(--text-link);
+}
+
+.tm-type-tabs .el-tabs__active-bar {
+  height: var(--module-nav-indicator-height);
+  background: var(--primary);
+}
+
+.tm-type-tabs .el-tabs__content {
+  display: none;
+}
+
+.tm-actions {
+  align-self: center;
+  padding-left: var(--space-3);
+}
+
+@media (max-width: 1366px) {
+  :root {
+    --module-nav-item-min-width: 104px;
+    --module-nav-item-x: 16px;
+    --module-nav-font-size: 14px;
+  }
+}
+
+@media (max-width: 900px) {
+  .tm-topbar {
+    align-items: stretch;
+  }
+
+  .tm-type-tabs {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .tm-type-tabs .el-tabs__nav {
+    min-width: max-content;
+  }
+
+  .tm-actions {
+    align-self: flex-start;
+    padding-left: 0;
+  }
+}

@@ -1,4 +1,4 @@
-import { withAccountQuery } from './accountContext'
+import { withSchoolQuery } from './accountContext'
 import { authHeaders } from './auth'
 
 export type SystemHealth = {
@@ -34,7 +34,7 @@ export function isApiSourceEnabled(): boolean {
 }
 
 export async function fetchSystemHealth(): Promise<SystemHealth> {
-  const response = await fetch(withAccountQuery(endpoint(`/api/${profile}/system/health`)), {
+  const response = await fetch(withSchoolQuery(endpoint(`/api/${profile}/system/health`)), {
     method: 'GET',
     headers: authHeaders()
   })

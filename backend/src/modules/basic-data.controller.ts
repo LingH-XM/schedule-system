@@ -48,6 +48,7 @@ export class BasicDataController {
       ...(body as Record<string, unknown>),
       _savedAt: Date.now()
     }
+    this.validateCampusOrderNumbers((incoming as Record<string, unknown>).campuses)
     const current = await this.storage.read(auth.schoolId, profile, planId, 'basic-data')
     const payload = this.dataScope.mergeBasicData(auth, current, incoming)
     await this.storage.write(auth.schoolId, profile, planId, 'basic-data', payload)
@@ -60,5 +61,25 @@ export class BasicDataController {
       throw new BadRequestException('profile must be test or prod')
     }
     return normalizeProfile(raw)
+  }
+
+  private validateCampusOrderNumbers(raw: unknown): void {
+    if (raw === undefined) return
+    if (!Array.isArray(raw)) throw new BadRequestException('校区数据格式不正确')
+
+    const usedOrderNumbers = new Set<number>()
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new BadRequestException('校区数据格式不正确')
+      }
+      const orderNo = Number((item as Record<string, unknown>).orderNo)
+      if (!Number.isInteger(orderNo) || orderNo <= 0) {
+        throw new BadRequestException('校区序号必须是大于 0 的整数')
+      }
+      if (usedOrderNumbers.has(orderNo)) {
+        throw new BadRequestException(`校区序号 ${orderNo} 重复，每个序号必须唯一`)
+      }
+      usedOrderNumbers.add(orderNo)
+    }
   }
 }

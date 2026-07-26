@@ -28,7 +28,7 @@ export class DataScopeService {
     for (const key of SCOPED_ARRAY_KEYS) result[key] = this.filterScopedArray(auth, source[key])
     result.classRoomMappings = asArray(source.classRoomMappings).filter((item) => classIds.has(String(item.classId || '')))
     result.arrangementScopes = this.filterScopeMap(auth, source.arrangementScopes)
-    result.scheduleWorkbench = this.filterWorkbench(auth, source.scheduleWorkbench)
+    delete result.scheduleWorkbench
     result.termData = this.filterTermData(auth, source.termData)
 
     const selectedCampus = String(source.arrangementCampusId || source.selectedHoursCampusId || '')
@@ -51,7 +51,7 @@ export class DataScopeService {
       merged[key] = this.mergeScopedArray(auth, current[key], incoming[key])
     }
     merged.arrangementScopes = this.mergeScopeMap(auth, current.arrangementScopes, incoming.arrangementScopes)
-    merged.scheduleWorkbench = this.mergeWorkbench(auth, current.scheduleWorkbench, incoming.scheduleWorkbench)
+    delete merged.scheduleWorkbench
     merged.termData = this.mergeTermData(auth, current.termData, incoming.termData)
 
     const campusId = String(incoming.arrangementCampusId || '')
@@ -109,28 +109,6 @@ export class DataScopeService {
   private scopeKeyAllowed(auth: AuthContext, key: string): boolean {
     const [campusId = '', grade = ''] = key.split('::')
     return hasScope(auth, campusId, grade)
-  }
-
-  private filterWorkbench(auth: AuthContext, raw: unknown): JsonObject {
-    const source = asObject(raw)
-    return Object.fromEntries(
-      Object.entries(source).filter(([, value]) => {
-        const item = asObject(value)
-        return hasScope(auth, String(item.selectedCampus || ''), String(item.selectedGrade || ''))
-      })
-    )
-  }
-
-  private mergeWorkbench(auth: AuthContext, currentRaw: unknown, incomingRaw: unknown): JsonObject {
-    const current = asObject(currentRaw)
-    const incoming = asObject(incomingRaw)
-    const retained = Object.fromEntries(
-      Object.entries(current).filter(([, value]) => {
-        const item = asObject(value)
-        return !hasScope(auth, String(item.selectedCampus || ''), String(item.selectedGrade || ''))
-      })
-    )
-    return { ...retained, ...this.filterWorkbench(auth, incoming) }
   }
 
   private filterTermData(auth: AuthContext, raw: unknown): JsonObject {

@@ -1,4 +1,4 @@
-import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { withAccountStorageKey, withSchoolQuery } from './accountContext'
 import { authHeaders } from './auth'
 import type { AuthScope } from '../types/auth'
 
@@ -53,7 +53,7 @@ function scopedLocalKey(key: string, termId: string): string {
 }
 
 function endpoint(path: string, termId: string): string {
-  return withAccountQuery(
+  return withSchoolQuery(
     `${apiBaseUrl}${path}?planId=${encodeURIComponent(planId)}&termId=${encodeURIComponent(requireTermId(termId))}`
   )
 }

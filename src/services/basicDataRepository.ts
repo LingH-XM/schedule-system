@@ -1,8 +1,9 @@
-import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { withAccountStorageKey, withSchoolQuery } from './accountContext'
 import { authHeaders } from './auth'
 
 export type Campus = {
   id: string
+  orderNo: number
   schoolName?: string
   name: string
   system: boolean
@@ -136,16 +137,6 @@ export type ClassHourClassRow = {
   fixedActivities?: FixedActivity[]
 }
 
-export type ScheduleWorkbenchEntry = {
-  selectedCampus: string
-  selectedGrade: string
-  selectedClass: string
-  scheduleMap: Record<string, Record<string, unknown>>
-  savedAt: number
-  publishedAt?: number
-  version: number
-}
-
 export type BasicDataSnapshot = {
   campuses: Campus[]
   schoolYears: SchoolYear[]
@@ -167,7 +158,6 @@ export type BasicDataSnapshot = {
   arrangementRows?: unknown[]
   arrangementBatchValues?: Record<string, number | null>
   arrangementScopes?: Record<string, unknown>
-  scheduleWorkbench?: Record<string, ScheduleWorkbenchEntry>
   termData?: Record<string, Record<string, unknown>>
   _savedAt?: number
 }
@@ -196,26 +186,66 @@ function snapshotSavedAt(payload: Partial<BasicDataSnapshot> | null): number {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
 }
 
+export function sortCampusesByOrder(list: Campus[]): Campus[] {
+  const sorted = list
+    .map((item, index) => {
+      const rawOrderNo = Number((item as Campus & { orderNo?: number | string }).orderNo)
+      return {
+        ...item,
+        orderNo: Number.isFinite(rawOrderNo) && rawOrderNo > 0 ? Math.floor(rawOrderNo) : index + 1
+      }
+    })
+    .sort(
+      (a, b) =>
+        a.orderNo - b.orderNo ||
+        a.name.localeCompare(b.name, 'zh-Hans-CN') ||
+        a.id.localeCompare(b.id)
+    )
+
+  let previousOrderNo = 0
+  return sorted.map((item) => {
+    const orderNo = item.orderNo > previousOrderNo ? item.orderNo : previousOrderNo + 1
+    previousOrderNo = orderNo
+    return {
+      ...item,
+      orderNo
+    }
+  })
+}
+
+function normalizeSnapshotCampusOrder(
+  payload: Partial<BasicDataSnapshot> | null
+): Partial<BasicDataSnapshot> | null {
+  if (!payload || !Array.isArray(payload.campuses)) return payload
+  return {
+    ...payload,
+    campuses: sortCampusesByOrder(payload.campuses)
+  }
+}
+
 export const basicDataLocalRepository: BasicDataRepository = {
   load() {
     const raw = localStorage.getItem(withAccountStorageKey(BASIC_DATA_STORAGE_KEY))
     if (!raw) return null
 
     try {
-      return JSON.parse(raw) as Partial<BasicDataSnapshot>
+      return normalizeSnapshotCampusOrder(JSON.parse(raw) as Partial<BasicDataSnapshot>)
     } catch {
       return null
     }
   },
 
   save(snapshot) {
-    localStorage.setItem(withAccountStorageKey(BASIC_DATA_STORAGE_KEY), JSON.stringify(snapshot))
+    localStorage.setItem(
+      withAccountStorageKey(BASIC_DATA_STORAGE_KEY),
+      JSON.stringify({ ...snapshot, campuses: sortCampusesByOrder(snapshot.campuses) })
+    )
   }
 }
 
 export const basicDataApiRepository: BasicDataRepository = {
   async load() {
-    const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
+    const endpoint = withSchoolQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
     try {
       const response = await fetch(endpoint, { method: 'GET', headers: authHeaders() })
       if (!response.ok) {
@@ -226,7 +256,7 @@ export const basicDataApiRepository: BasicDataRepository = {
         return basicDataLocalRepository.load()
       }
       const apiData = payload as Partial<BasicDataSnapshot>
-      return apiData
+      return normalizeSnapshotCampusOrder(apiData)
     } catch (error) {
       console.warn('[BasicDataRepository] API 读取失败。', error)
       return basicDataLocalRepository.load()
@@ -240,10 +270,11 @@ export const basicDataApiRepository: BasicDataRepository = {
       .then(async () => {
         const enriched: BasicDataSnapshot = {
           ...immutableSnapshot,
+          campuses: sortCampusesByOrder(immutableSnapshot.campuses),
           _savedAt: Date.now()
         }
 
-        const endpoint = withAccountQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
+        const endpoint = withSchoolQuery(`${apiBaseUrl}${BASIC_DATA_API_PATH}?planId=${encodeURIComponent(planId)}`)
         const response = await fetch(endpoint, {
           method: 'PUT',
           headers: authHeaders({ 'Content-Type': 'application/json' }),

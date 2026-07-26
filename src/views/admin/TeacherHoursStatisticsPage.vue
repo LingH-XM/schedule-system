@@ -484,7 +484,7 @@ onMounted(() => void refreshData())
   max-width: 100%;
   min-width: 0;
   min-height: calc(100vh - 112px);
-  padding: 24px;
+  padding: var(--page-panel-padding);
   overflow: hidden;
 }
 
@@ -492,28 +492,30 @@ onMounted(() => void refreshData())
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 20px;
+  gap: var(--page-header-gap);
+  margin-bottom: var(--page-header-bottom);
 }
 
 .teacher-hours-header h1 {
   margin: 0;
-  color: #172642;
-  font-size: 30px;
-  line-height: 1.25;
+  color: var(--text-heading);
+  font-size: var(--font-size-page-title);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
 }
 
 .teacher-hours-header p {
-  margin: 7px 0 0;
-  color: #7182a5;
-  font-size: 14px;
+  margin: var(--title-description-gap) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
 }
 
 .teacher-hours-toolbar {
   display: flex;
   align-items: flex-end;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--toolbar-gap);
+  padding: var(--toolbar-padding);
   border: 1px solid #dbe6fb;
   border-radius: 12px;
   background: #f7faff;
@@ -530,7 +532,7 @@ onMounted(() => void refreshData())
 }
 
 .teacher-hours-filter > span {
-  color: #556889;
+  color: var(--text-body);
   font-size: 13px;
   font-weight: 600;
 }
@@ -602,7 +604,7 @@ onMounted(() => void refreshData())
 
 .teacher-hours-metric small {
   margin-left: 7px;
-  color: #8b99b3;
+  color: var(--text-secondary);
 }
 
 .teacher-hours-table-wrap {
@@ -630,7 +632,7 @@ onMounted(() => void refreshData())
 .teacher-hours-table-heading p,
 .teacher-hours-table-actions > span {
   margin: 4px 0 0;
-  color: #8190aa;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -682,7 +684,7 @@ onMounted(() => void refreshData())
 
 .teacher-hours-progress span,
 .teacher-hours-muted {
-  color: #7182a5;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 

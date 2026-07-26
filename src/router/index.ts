@@ -10,7 +10,6 @@ import ScheduleWorkbenchPage from '../views/admin/ScheduleWorkbenchPage.vue'
 import TeacherHoursStatisticsPage from '../views/admin/TeacherHoursStatisticsPage.vue'
 import TimetableManagementPage from '../views/admin/TimetableManagementPage.vue'
 import HelpCenterPage from '../views/admin/HelpCenterPage.vue'
-import DesignShowcaseView from '../views/DesignShowcaseView.vue'
 import SchoolFeatureConfigPage from '../views/admin/SchoolFeatureConfigPage.vue'
 import { getCurrentUser, hasPermission, hasRequiredRole, isAuthenticated } from '../services/auth'
 import type { AuthRole } from '../types/auth'
@@ -19,7 +18,6 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
-    { path: '/design-showcase', name: 'designShowcase', component: DesignShowcaseView },
     {
       path: '/help/:page?',
       name: 'helpCenter',

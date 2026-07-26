@@ -243,15 +243,9 @@ const publishScopeHint = computed(() => publishScope.value === 'grade'
   ? `仅更新「${currentPublishScopeLabel.value}」的已发布课表，其他年级保持原样。`
   : '使用当前方案的完整排课结果，更新全部校区和年级。')
 
-function getCurrentRuleWeightConfigForScope(): RuleWeightConfig {
+function getCurrentRuleWeightConfig(): RuleWeightConfig {
   const snapshot = ruleSettingsSnapshotRef.value
-  const campusName = campusNameById(selectedCampus.value)
-  const grade = selectedGrade.value
-  if (!campusName || !grade) {
-    return JSON.parse(JSON.stringify(defaultRuleWeightConfig)) as RuleWeightConfig
-  }
-  const hit = (snapshot.ruleWeightConfigs || []).find((item) => item.campus === campusName && item.grade === grade)
-  return JSON.parse(JSON.stringify(hit?.config || defaultRuleWeightConfig)) as RuleWeightConfig
+  return JSON.parse(JSON.stringify(snapshot.ruleWeightConfig || defaultRuleWeightConfig)) as RuleWeightConfig
 }
 
 function findRuleWeightRule(config: RuleWeightConfig, key: RuleWeightRuleKey) {
@@ -1774,7 +1768,7 @@ function courseRuleMessageAtSlot(
   slotKey: string,
   movingFromSlotKey?: string
 ): string | null {
-  const ruleWeightConfig = getCurrentRuleWeightConfigForScope()
+  const ruleWeightConfig = getCurrentRuleWeightConfig()
   const enableCourseArea = isHardRuleEnabled(ruleWeightConfig, 'courseArea')
   const enableCourseBan = isHardRuleEnabled(ruleWeightConfig, 'courseBan')
   const relevantSlotKeys = slotListForDaysCount(resolveWeeklyDaysCountByClassId(classId))
@@ -1852,7 +1846,7 @@ function teacherMutualMessageAtSlot(
   slotKey: string,
   excludedClassIds: string[] = []
 ): string | null {
-  if (!isHardRuleEnabled(getCurrentRuleWeightConfigForScope(), 'teacherMutual')) return null
+  if (!isHardRuleEnabled(getCurrentRuleWeightConfig(), 'teacherMutual')) return null
   const incoming = new Set(teachers.map((item) => String(item || '').trim()).filter(Boolean))
   if (incoming.size <= 0) return null
   const excluded = new Set(excludedClassIds)
@@ -2445,7 +2439,7 @@ function normalizeCombinedSolveDemands(rawDemands: ApiSolveDemand[]): ApiSolveDe
 }
 
 function buildApiSmartSolvePayloadForGrade(classIds: string[]): ApiSmartSolveRequest {
-  const ruleWeightConfig = getCurrentRuleWeightConfigForScope()
+  const ruleWeightConfig = getCurrentRuleWeightConfig()
   const enableTeacherBan = isHardRuleEnabled(ruleWeightConfig, 'teacherBan')
   const enableTeacherHourLimit = isHardRuleEnabled(ruleWeightConfig, 'teacherHourLimit')
   const enableTeacherMutual = isHardRuleEnabled(ruleWeightConfig, 'teacherMutual')
@@ -2656,7 +2650,7 @@ async function runSmartScheduling(): Promise<void> {
   classIds.forEach((classId) => ensureClassGrid(classId))
   const historyBefore = snapshotScheduleMap()
 
-  const enableOddEven = isFeatureRuleEnabled(getCurrentRuleWeightConfigForScope(), 'oddEven')
+  const enableOddEven = isFeatureRuleEnabled(getCurrentRuleWeightConfig(), 'oddEven')
   const oddEvenIssues = enableOddEven
     ? classIds.flatMap((classId) => {
         const params = buildCoursePoolParamsForClass(classId, { enableOddEven: true })

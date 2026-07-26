@@ -1,4 +1,4 @@
-import { withAccountQuery, withAccountStorageKey } from './accountContext'
+import { withAccountStorageKey, withSchoolQuery } from './accountContext'
 import { authHeaders } from './auth'
 import { basicDataRepository } from './basicDataRepository'
 
@@ -158,13 +158,6 @@ export type RuleWeightRule = {
   weight: number
 }
 
-export type RuleWeightConfigRecord = {
-  id: string
-  campus: string
-  grade: string
-  config: RuleWeightConfig
-}
-
 export type GlobalFixedPointRecord = {
   id: string
   campus: string
@@ -189,13 +182,13 @@ export type RuleSettingsSnapshot = {
   teacherHourRules: TeacherHourRuleRecord[]
   consecutiveSettings: ConsecutiveSettingMap
   courseDefaultConfig: CourseDefaultConfig
-  ruleWeightConfigs: RuleWeightConfigRecord[]
+  ruleWeightConfig: RuleWeightConfig
   _termId?: string
   _savedAt?: number
 }
 
 const RULE_SETTINGS_STORAGE_KEY = 'schedule_rule_settings_v1'
-const CURRENT_SNAPSHOT_VERSION = 2
+const CURRENT_SNAPSHOT_VERSION = 3
 const ruleSettingsSource = (import.meta.env.VITE_RULE_SETTINGS_SOURCE ?? import.meta.env.VITE_BASIC_DATA_SOURCE ?? 'api').toLowerCase()
 const ruleSettingsApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/$/, '')
 const ruleSettingsApiProfile = (import.meta.env.VITE_API_PROFILE ?? 'test').trim().toLowerCase() || 'test'
@@ -212,7 +205,7 @@ function scopedRuleSettingsStorageKey(termId: string): string {
 }
 
 function scopedRuleSettingsEndpoint(termId: string): string {
-  return withAccountQuery(
+  return withSchoolQuery(
     `${ruleSettingsApiBaseUrl}${RULE_SETTINGS_API_PATH}?planId=${encodeURIComponent(ruleSettingsPlanId)}&termId=${encodeURIComponent(termId)}`
   )
 }
@@ -342,8 +335,6 @@ export const defaultRuleWeightConfig: RuleWeightConfig = {
   softRules: defaultRuleWeightSoftRules.map((item) => ({ ...item }))
 }
 
-export const defaultRuleWeightConfigs: RuleWeightConfigRecord[] = []
-
 function createDefaultSnapshot(): RuleSettingsSnapshot {
   return {
     version: CURRENT_SNAPSHOT_VERSION,
@@ -359,7 +350,7 @@ function createDefaultSnapshot(): RuleSettingsSnapshot {
     teacherHourRules: [],
     consecutiveSettings: {},
     courseDefaultConfig: cloneCourseDefaultConfig(),
-    ruleWeightConfigs: defaultRuleWeightConfigs.map((item) => ({ ...item, config: normalizeRuleWeightConfig(item.config) })),
+    ruleWeightConfig: normalizeRuleWeightConfig(defaultRuleWeightConfig),
     _savedAt: 0
   }
 }
@@ -851,24 +842,24 @@ function normalizeRuleWeightConfig(value: unknown): RuleWeightConfig {
   }
 }
 
-function normalizeRuleWeightConfigRecord(value: unknown): RuleWeightConfigRecord | null {
-  const raw = value as Partial<RuleWeightConfigRecord>
-  const campus = typeof raw?.campus === 'string' ? raw.campus.trim() : ''
-  const grade = typeof raw?.grade === 'string' ? raw.grade.trim() : ''
-  if (!campus || !grade) return null
-  return {
-    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id : `rw-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-    campus,
-    grade,
-    config: normalizeRuleWeightConfig(raw.config)
+function normalizeTermRuleWeightConfig(value: {
+  ruleWeightConfig?: unknown
+  ruleWeightConfigs?: unknown
+}): RuleWeightConfig {
+  if (value.ruleWeightConfig && typeof value.ruleWeightConfig === 'object') {
+    return normalizeRuleWeightConfig(value.ruleWeightConfig)
   }
-}
 
-function cloneRuleWeightConfigRecords(items: RuleWeightConfigRecord[]): RuleWeightConfigRecord[] {
-  return items.map((item) => ({
-    ...item,
-    config: normalizeRuleWeightConfig(item.config)
-  }))
+  // 兼容旧版“校区 + 年级”多份权重：迁移时采用本学期最后保存的一份。
+  const legacyRecords = Array.isArray(value.ruleWeightConfigs) ? value.ruleWeightConfigs : []
+  for (let index = legacyRecords.length - 1; index >= 0; index -= 1) {
+    const record = legacyRecords[index]
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue
+    const config = (record as { config?: unknown }).config
+    if (config && typeof config === 'object') return normalizeRuleWeightConfig(config)
+  }
+
+  return normalizeRuleWeightConfig(defaultRuleWeightConfig)
 }
 
 function snapshotSavedAt(payload: Partial<RuleSettingsSnapshot> | null): number {
@@ -890,7 +881,10 @@ export function loadRuleSettingsSnapshot(termId = activeRuleSettingsTermId): Rul
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<RuleSettingsSnapshot> & { ruleWeightConfig?: unknown }
+    const parsed = JSON.parse(raw) as Omit<Partial<RuleSettingsSnapshot>, 'ruleWeightConfig'> & {
+      ruleWeightConfig?: unknown
+      ruleWeightConfigs?: unknown
+    }
     const globalFixedPoints = Array.isArray(parsed.globalFixedPoints)
       ? parsed.globalFixedPoints.filter((item) => isValidGlobalFixedPoint(item))
       : []
@@ -925,21 +919,7 @@ export function loadRuleSettingsSnapshot(termId = activeRuleSettingsTermId): Rul
       parsedVersion < CURRENT_SNAPSHOT_VERSION && isLegacyCourseDefaultConfig(parsed.courseDefaultConfig)
         ? cloneCourseDefaultConfig()
         : normalizeCourseDefaultConfig(parsed.courseDefaultConfig)
-    const ruleWeightConfigs = Array.isArray(parsed.ruleWeightConfigs)
-      ? parsed.ruleWeightConfigs
-          .map((item) => normalizeRuleWeightConfigRecord(item))
-          .filter((item): item is RuleWeightConfigRecord => Boolean(item))
-      : []
-
-    // Backward compatibility: migrate old single-config storage to a default scoped record.
-    if (ruleWeightConfigs.length === 0 && parsed.ruleWeightConfig) {
-      ruleWeightConfigs.push({
-        id: `rw-migrated-${Date.now()}`,
-        campus: '本校区',
-        grade: '一年级',
-        config: normalizeRuleWeightConfig(parsed.ruleWeightConfig)
-      })
-    }
+    const ruleWeightConfig = normalizeTermRuleWeightConfig(parsed)
 
     return {
       version: CURRENT_SNAPSHOT_VERSION,
@@ -955,7 +935,7 @@ export function loadRuleSettingsSnapshot(termId = activeRuleSettingsTermId): Rul
       teacherHourRules: cloneTeacherHourRules(teacherHourRules),
       consecutiveSettings: cloneConsecutiveSettings(consecutiveSettings),
       courseDefaultConfig: cloneCourseDefaultConfig(courseDefaultConfig),
-      ruleWeightConfigs: cloneRuleWeightConfigRecords(ruleWeightConfigs),
+      ruleWeightConfig,
       _termId: normalizedTermId,
       _savedAt: snapshotSavedAt(parsed)
     }
@@ -985,7 +965,7 @@ export function saveRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot, termId 
     teacherHourRules: cloneTeacherHourRules(snapshot.teacherHourRules || []),
     consecutiveSettings: cloneConsecutiveSettings(snapshot.consecutiveSettings || {}),
     courseDefaultConfig: normalizeCourseDefaultConfig(snapshot.courseDefaultConfig),
-    ruleWeightConfigs: cloneRuleWeightConfigRecords(snapshot.ruleWeightConfigs || []),
+    ruleWeightConfig: normalizeRuleWeightConfig(snapshot.ruleWeightConfig),
     _termId: normalizedTermId,
     _savedAt: Date.now()
   }

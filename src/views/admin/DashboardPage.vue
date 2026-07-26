@@ -22,20 +22,20 @@ import { RouterLink } from 'vue-router'
 <style scoped>
 .dashboard-panel {
   display: grid;
-  gap: 28px;
+  gap: var(--space-6);
 }
 
 .dashboard-intro p {
   margin-bottom: 0;
-  color: #5e6d91;
+  color: var(--text-secondary);
 }
 
 .dashboard-guide {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 28px;
-  padding: 24px 26px;
+  gap: var(--space-6);
+  padding: var(--space-6);
   border: 1px solid #dfe4ed;
   border-radius: 10px;
   background: #fafbfc;
@@ -43,24 +43,24 @@ import { RouterLink } from 'vue-router'
 
 .dashboard-guide h2 {
   margin: 0;
-  color: #1f2a44;
+  color: var(--text-heading);
   font-size: 19px;
 }
 
 .dashboard-guide p {
-  margin: 8px 0 0;
-  color: #647187;
+  margin: var(--space-2) 0 0;
+  color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.7;
 }
 
 .dashboard-guide-link {
   flex: 0 0 auto;
-  padding: 10px 16px;
+  padding: 10px var(--space-4);
   border: 1px solid #b9d7fb;
   border-radius: 7px;
   background: #fff;
-  color: #2f80d5;
+  color: var(--text-link);
   font-size: 14px;
   font-weight: 600;
 }
@@ -68,6 +68,7 @@ import { RouterLink } from 'vue-router'
 .dashboard-guide-link:hover {
   border-color: #83bafa;
   background: #f7fbff;
+  color: var(--text-link-hover);
 }
 
 @media (max-width: 680px) {

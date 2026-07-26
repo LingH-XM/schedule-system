@@ -18,7 +18,7 @@ function healthSessionKey(): string {
 async function checkBackendHealth(): Promise<void> {
   if (checkingHealth || !isAuthenticated()) return
   if (getCurrentUser()?.mustChangePassword) return
-  if (route.path === '/login' || route.path === '/design-showcase') return
+  if (route.path === '/login') return
 
   const sessionKey = healthSessionKey()
   if (sessionStorage.getItem(sessionKey) === '1') return

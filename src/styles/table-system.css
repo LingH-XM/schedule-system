@@ -1,0 +1,171 @@
+/*
+ * Global data-table system
+ *
+ * This style applies to management data tables. Workbench and timetable
+ * canvases are excluded because their cells represent time slots rather than
+ * ordinary records.
+ */
+:root {
+  --table-header-bg: #f1f5fb;
+  --table-row-bg: #ffffff;
+  --table-stripe-bg: #f8fafd;
+  --table-hover-bg: #eef3fa;
+  --table-selected-bg: #eaf0fa;
+  --table-border: #d9e2f0;
+  --table-header-text: var(--text-body);
+  --table-body-text: var(--text-body);
+  --table-muted-text: var(--text-secondary);
+  --table-cell-x: 14px;
+  --table-header-y: 12px;
+  --table-body-y: 11px;
+  --table-radius: 10px;
+}
+
+/* Element Plus management tables. */
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table) {
+  --el-table-border-color: var(--table-border);
+  --el-table-header-bg-color: var(--table-header-bg);
+  --el-table-tr-bg-color: var(--table-row-bg);
+  --el-table-row-hover-bg-color: var(--table-hover-bg);
+  --el-table-current-row-bg-color: var(--table-selected-bg);
+  --el-table-text-color: var(--table-body-text);
+  --el-table-header-text-color: var(--table-header-text);
+  overflow: hidden;
+  border: 1px solid var(--table-border);
+  border-radius: var(--table-radius);
+}
+
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  .el-table__inner-wrapper {
+  border-radius: calc(var(--table-radius) - 1px);
+}
+
+/*
+ * Element Plus draws its bottom and right edges with pseudo-elements. They
+ * leave clipped gaps at rounded corners, so ordinary tables use the outer
+ * border above as the complete frame instead.
+ */
+.admin-content
+  .el-table--border:not(.workbench-el-table):not(.tm-table)::after,
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  .el-table__inner-wrapper::before {
+  display: none;
+}
+
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  th.el-table__cell {
+  padding: var(--table-header-y) 0;
+  background: var(--table-header-bg);
+  color: var(--table-header-text);
+  font-weight: var(--font-weight-semibold);
+}
+
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  td.el-table__cell {
+  padding: var(--table-body-y) 0;
+  color: var(--table-body-text);
+}
+
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  :is(th.el-table__cell, td.el-table__cell)
+  > .cell {
+  padding-right: var(--table-cell-x);
+  padding-left: var(--table-cell-x);
+  line-height: var(--line-height-ui);
+}
+
+.admin-content
+  .el-table--striped:not(.workbench-el-table):not(.tm-table)
+  .el-table__body
+  tr.el-table__row--striped
+  td.el-table__cell {
+  background: var(--table-stripe-bg);
+}
+
+.admin-content
+  .el-table:not(.workbench-el-table):not(.tm-table)
+  .el-table__empty-text {
+  color: var(--table-muted-text);
+}
+
+/* Keep Element Plus' native arrow shape; only normalize its color states. */
+.admin-content .el-table .sort-caret.ascending {
+  border-bottom-color: var(--text-disabled);
+}
+
+.admin-content .el-table .sort-caret.descending {
+  border-top-color: var(--text-disabled);
+}
+
+.admin-content .el-table .ascending .sort-caret.ascending {
+  border-bottom-color: var(--primary);
+}
+
+.admin-content .el-table .descending .sort-caret.descending {
+  border-top-color: var(--primary);
+}
+
+/* Native management tables used by basic data and rule settings. */
+.admin-content :is(.fixed-table, .semester-table, .arrangement-table) {
+  color: var(--table-body-text);
+  background: var(--table-row-bg);
+}
+
+.admin-content
+  :is(.fixed-table, .semester-table, .arrangement-table)
+  th {
+  padding: var(--table-header-y) var(--table-cell-x);
+  border-color: var(--table-border);
+  background: var(--table-header-bg);
+  color: var(--table-header-text);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+  text-align: center;
+}
+
+.admin-content
+  :is(.fixed-table, .semester-table, .arrangement-table)
+  td {
+  padding: var(--table-body-y) var(--table-cell-x);
+  border-color: var(--table-border);
+  color: var(--table-body-text);
+  line-height: var(--line-height-ui);
+  text-align: center;
+}
+
+/* Shared pagination rhythm. */
+.admin-content
+  :is(.teacher-pagination, .teacher-hours-pagination, .el-pagination) {
+  color: var(--text-body);
+}
+
+.admin-content .el-pagination {
+  gap: var(--space-1);
+}
+
+.admin-content .el-pagination__total,
+.admin-content .el-pagination__jump {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 1366px) {
+  :root {
+    --table-cell-x: 12px;
+    --table-header-y: 10px;
+    --table-body-y: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --table-cell-x: 10px;
+    --table-header-y: 9px;
+    --table-body-y: 9px;
+  }
+}

@@ -17,6 +17,7 @@ withDefaults(
     :class="[`content-skeleton--${variant}`, { 'content-skeleton--sidebar': showSidebar }]"
     aria-label="正在加载页面内容"
     aria-busy="true"
+    aria-live="polite"
   >
     <aside v-if="showSidebar" class="content-skeleton__sidebar">
       <el-skeleton animated>
@@ -88,9 +89,9 @@ withDefaults(
   min-width: 0;
   min-height: calc(100vh - 112px);
   padding: 24px;
-  border: 1px solid #dbe6fb;
+  border: 1px solid var(--skeleton-line);
   border-radius: 14px;
-  background: #fff;
+  background: var(--skeleton-surface);
 }
 
 .content-skeleton--sidebar {
@@ -105,9 +106,9 @@ withDefaults(
 .content-skeleton__main {
   min-width: 0;
   padding: 24px;
-  border: 1px solid #dbe6fb;
+  border: 1px solid var(--skeleton-line);
   border-radius: 14px;
-  background: #fff;
+  background: var(--skeleton-surface);
 }
 
 .content-skeleton:not(.content-skeleton--sidebar) .content-skeleton__main {
@@ -166,9 +167,9 @@ withDefaults(
   gap: 12px;
   margin: 28px 0 20px;
   padding: 16px;
-  border: 1px solid #edf1f7;
+  border: 1px solid var(--skeleton-line);
   border-radius: 12px;
-  background: #f8faff;
+  background: var(--skeleton-panel);
 }
 
 .content-skeleton__toolbar .el-skeleton__item {
@@ -189,7 +190,7 @@ withDefaults(
 
 .content-skeleton__table {
   padding: 18px;
-  border: 1px solid #e5ebf5;
+  border: 1px solid var(--skeleton-line);
   border-radius: 12px;
 }
 
@@ -209,14 +210,14 @@ withDefaults(
 
 .content-skeleton__form {
   padding: 22px;
-  border: 1px solid #e5ebf5;
+  border: 1px solid var(--skeleton-line);
   border-radius: 12px;
 }
 
 .content-skeleton__form-row {
   gap: 16px;
   padding: 14px 0;
-  border-bottom: 1px solid #edf1f7;
+  border-bottom: 1px solid var(--skeleton-line);
 }
 
 .content-skeleton__form-row .el-skeleton__item:first-child {
@@ -249,7 +250,7 @@ withDefaults(
   display: grid;
   gap: 10px;
   padding: 14px;
-  border: 1px solid #e5ebf5;
+  border: 1px solid var(--skeleton-line);
   border-radius: 12px;
 }
 
@@ -289,6 +290,13 @@ withDefaults(
 
   .content-skeleton__toolbar .el-skeleton__item:nth-child(n + 4) {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content-skeleton :deep(.el-skeleton.is-animated .el-skeleton__item) {
+    animation: none;
+    background: var(--skeleton-base);
   }
 }
 </style>

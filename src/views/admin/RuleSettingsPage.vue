@@ -28,7 +28,6 @@ import {
   type RuleWeightConfig,
   type RuleWeightRule,
   type RuleWeightRuleKey,
-  type RuleWeightConfigRecord,
   type RuleWeightHardKey,
   type RuleWeightSoftKey,
   type RuleSettingsSnapshot
@@ -613,10 +612,9 @@ const teacherMutualRules = ref<TeacherMutualRuleRecord[]>(ruleSettingsSnapshot.t
 const courseDefaultConfig = ref<CourseDefaultConfig>(
   cloneCourseDefaultConfig(ruleSettingsSnapshot.courseDefaultConfig || defaultCourseDefaultConfig)
 )
-const ruleWeightConfig = ref<RuleWeightConfig>(JSON.parse(JSON.stringify(defaultRuleWeightConfig)))
-const ruleWeightConfigs = ref<RuleWeightConfigRecord[]>(ruleSettingsSnapshot.ruleWeightConfigs || [])
-const selectedWeightCampus = ref('')
-const selectedWeightGrade = ref('')
+const ruleWeightConfig = ref<RuleWeightConfig>(
+  JSON.parse(JSON.stringify(ruleSettingsSnapshot.ruleWeightConfig || defaultRuleWeightConfig))
+)
 const selectedMainCampus = ref('')
 const selectedMainGrade = ref('')
 const selectedMainSubjects = ref<string[]>([])
@@ -680,7 +678,7 @@ function applyRuleSettingsSnapshot(snapshot: RuleSettingsSnapshot): void {
         }
       }
     : cloneCourseDefaultConfig()
-  ruleWeightConfigs.value = Array.isArray(snapshot.ruleWeightConfigs) ? [...snapshot.ruleWeightConfigs] : []
+  ruleWeightConfig.value = JSON.parse(JSON.stringify(snapshot.ruleWeightConfig || defaultRuleWeightConfig))
 }
 const hardRuleMeta: Record<RuleWeightHardKey, { label: string; desc: string }> = {
   teacherConflict: { label: '教师冲突', desc: '同一教师同节次不可在多个班上课。' },
@@ -770,17 +768,6 @@ const enabledSoftRuleCount = computed(() =>
     (item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey) && item.enabled
   ).length
 )
-const weightCampusOptions = computed(() => campusOptions.value)
-const weightGradeOptions = computed(() => {
-  const campusId = campusIdByName.value.get(selectedWeightCampus.value)
-  if (!campusId) return [] as string[]
-  return sortGradeLabels(
-    adminBaseSnapshot.value.classRecords
-      .filter((item) => item.campusId === campusId)
-      .map((item) => item.grade)
-  )
-})
-
 function setHardRuleEnabled(key: RuleWeightRuleKey, enabled: boolean): void {
   const target = ruleWeightConfig.value.rules.find((item) => item.key === key)
   if (!target) return
@@ -1003,20 +990,6 @@ function resetRuleWeightConfig(): void {
   notify.info('已恢复默认权重草稿，点击保存后生效。')
 }
 
-function ruleWeightKey(campus: string, grade: string): string {
-  return `${campus}::${grade}`
-}
-
-function loadCurrentRuleWeightConfig(): void {
-  if (!selectedWeightCampus.value || !selectedWeightGrade.value) {
-    ruleWeightConfig.value = JSON.parse(JSON.stringify(defaultRuleWeightConfig))
-    return
-  }
-  const key = ruleWeightKey(selectedWeightCampus.value, selectedWeightGrade.value)
-  const current = ruleWeightConfigs.value.find((item) => ruleWeightKey(item.campus, item.grade) === key)
-  ruleWeightConfig.value = JSON.parse(JSON.stringify(current?.config || defaultRuleWeightConfig))
-}
-
 function normalizeSoftWeights(): void {
   const enabled = ruleWeightConfig.value.rules.filter(
     (item) => item.mode === 'soft' && scoringSoftRuleKeySet.has(item.key as RuleWeightSoftKey) && item.enabled
@@ -1066,26 +1039,13 @@ function normalizeSoftWeights(): void {
 }
 
 function saveRuleWeightConfig(): void {
-  if (!selectedWeightCampus.value || !selectedWeightGrade.value) {
-    notify.warning('请先选择校区和年级。')
-    return
-  }
   if (ruleWeightConfig.value.autoNormalize) {
     normalizeSoftWeights()
   }
-  const key = ruleWeightKey(selectedWeightCampus.value, selectedWeightGrade.value)
-  const rest = ruleWeightConfigs.value.filter((item) => ruleWeightKey(item.campus, item.grade) !== key)
-  ruleWeightConfigs.value = [
-    ...rest,
-    {
-      id: `rw-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-      campus: selectedWeightCampus.value,
-      grade: selectedWeightGrade.value,
-      config: JSON.parse(JSON.stringify(ruleWeightConfig.value))
-    }
-  ]
-  persistRuleSettingsSections({ ruleWeightConfigs: ruleWeightConfigs.value })
-  notify.success(`规则权重已保存（${selectedWeightCampus.value} / ${selectedWeightGrade.value}）。`)
+  persistRuleSettingsSections({
+    ruleWeightConfig: JSON.parse(JSON.stringify(ruleWeightConfig.value))
+  })
+  notify.success('当前学年学期的规则权重已保存。')
 }
 
 function openCreateRelationDialog(): void {
@@ -3031,14 +2991,6 @@ async function loadAdminBaseOverview(): Promise<void> {
     }
     loadCurrentMainSecondarySelection()
 
-    if (!selectedWeightCampus.value || !weightCampusOptions.value.includes(selectedWeightCampus.value)) {
-      selectedWeightCampus.value = weightCampusOptions.value[0] ?? ''
-    }
-    if (!selectedWeightGrade.value || !weightGradeOptions.value.includes(selectedWeightGrade.value)) {
-      selectedWeightGrade.value = weightGradeOptions.value[0] ?? ''
-    }
-    loadCurrentRuleWeightConfig()
-
     if (!relationCampusOptions.value.includes(selectedRelationCampus.value)) {
       selectedRelationCampus.value = '全部校区'
     }
@@ -3273,32 +3225,12 @@ watch(mainGradeOptions, (items) => {
   }
 }, { immediate: true })
 
-watch(weightCampusOptions, (items) => {
-  if (!items.includes(selectedWeightCampus.value)) {
-    selectedWeightCampus.value = items[0] ?? ''
-  }
-}, { immediate: true })
-
-watch(weightGradeOptions, (items) => {
-  if (!items.includes(selectedWeightGrade.value)) {
-    selectedWeightGrade.value = items[0] ?? ''
-  }
-}, { immediate: true })
-
 watch(
   [selectedMainCampus, selectedMainGrade, mainSubjectOptions],
   () => {
     loadCurrentMainSecondarySelection()
   },
   { immediate: true }
-)
-
-watch(
-  [selectedWeightCampus, selectedWeightGrade, ruleWeightConfigs],
-  () => {
-    loadCurrentRuleWeightConfig()
-  },
-  { deep: true, immediate: true }
 )
 
 watch(relationCampusOptions, (items) => {
@@ -3662,10 +3594,6 @@ watch(
 
     <section class="rule-content">
       <section v-if="isAdvancedRuleStep" class="advanced-settings-nav" aria-label="高级设置分类">
-        <div class="advanced-settings-intro">
-          <strong>高级设置</strong>
-          <span>默认规则和权重会直接影响智能排课结果，建议仅由管理员统一维护。</span>
-        </div>
         <div class="advanced-settings-tabs" role="tablist" aria-label="高级设置选项">
           <button
             type="button"
@@ -3717,13 +3645,6 @@ watch(
       </div>
 
       <template v-if="activeStep === 'course-common'">
-        <header class="rule-head">
-          <div>
-            <h1>课程规则</h1>
-            <p>配置课程维度的排课限制、组合关系与时段策略。</p>
-          </div>
-        </header>
-
         <section class="rule-section rule-overview-page">
           <div class="rule-directory-layout">
             <nav class="rule-directory-list" aria-label="课程规则目录">
@@ -3758,13 +3679,6 @@ watch(
       </template>
 
       <template v-else-if="activeStep === 'teacher-rules'">
-        <header class="rule-head">
-          <div>
-            <h1>教师规则</h1>
-            <p>教师规则用于配置教师维度的禁排、课时与互斥策略。</p>
-          </div>
-        </header>
-
         <section class="rule-section rule-overview-page">
           <div class="rule-directory-layout rule-directory-layout-teacher">
             <nav class="rule-directory-list" aria-label="教师规则目录">
@@ -3869,17 +3783,6 @@ watch(
       </template>
 
       <template v-else-if="activeStep === 'course-default'">
-        <header class="rule-head">
-          <div>
-            <h1>默认规则管理</h1>
-            <p>规则介绍：管理课程规则的默认行为，减少重复配置。</p>
-          </div>
-          <div class="rule-head-actions">
-            <el-button size="small" @click="resetCourseDefaultConfig">恢复默认</el-button>
-            <el-button type="primary" size="small" @click="saveCourseDefaultConfig">保存</el-button>
-          </div>
-        </header>
-
         <section class="rule-section course-default-page">
           <el-card shadow="never" class="course-default-card">
             <div class="course-default-head">
@@ -3923,32 +3826,15 @@ watch(
               </template>
             </div>
           </el-card>
+          <div class="rule-page-footer-actions">
+            <el-button size="small" @click="resetCourseDefaultConfig">恢复默认</el-button>
+            <el-button type="primary" size="small" @click="saveCourseDefaultConfig">保存</el-button>
+          </div>
         </section>
       </template>
 
       <template v-else-if="activeStep === 'course-weight'">
-        <header class="rule-head">
-          <div>
-            <h1>规则权重分配</h1>
-            <p>规则介绍：硬约束必须全部满足；评分权重用于决定可行课表之间的优化侧重点。</p>
-          </div>
-          <div class="rule-head-actions">
-            <el-button size="small" @click="resetRuleWeightConfig">恢复默认</el-button>
-            <el-button type="primary" size="small" @click="saveRuleWeightConfig">保存</el-button>
-          </div>
-        </header>
-
         <section class="rule-section rule-weight-page">
-          <div class="fixed-filters">
-            <el-select v-model="selectedWeightCampus" class="rule-filter-select" placeholder="选择校区">
-              <el-option v-for="item in weightCampusOptions" :key="`wc-${item}`" :label="item" :value="item" />
-            </el-select>
-            <el-select v-model="selectedWeightGrade" class="rule-filter-select" placeholder="选择年级">
-              <el-option v-for="item in weightGradeOptions" :key="`wg-${item}`" :label="item" :value="item" />
-            </el-select>
-            <el-tag type="info" effect="plain">当前配置：{{ selectedWeightCampus || '--' }} / {{ selectedWeightGrade || '--' }}</el-tag>
-          </div>
-
           <div class="rule-weight-switches">
             <div class="rule-weight-switch-item">
               <span class="label">启用权重分配</span>
@@ -4065,6 +3951,10 @@ watch(
                   : '当前为手动权重模式，三个评分目标建议合计 100。'
               }}
             </span>
+          </div>
+          <div class="rule-page-footer-actions">
+            <el-button size="small" @click="resetRuleWeightConfig">恢复默认</el-button>
+            <el-button type="primary" size="small" @click="saveRuleWeightConfig">保存</el-button>
           </div>
         </section>
       </template>
@@ -4764,9 +4654,9 @@ watch(
           </div>
           <div class="rule-head-actions">
             <el-button
+              class="batch-delete-btn"
               type="danger"
               plain
-              size="small"
               :disabled="selectedCombineRuleIds.length === 0"
               @click="deleteSelectedCombineRules"
             >

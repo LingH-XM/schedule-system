@@ -1,0 +1,204 @@
+/*
+ * Global spacing system
+ *
+ * Spacing follows a 4px base grid. New pages should use these tokens instead
+ * of introducing one-off values. Dense timetable screens use the compact
+ * aliases so that smaller laptop screens keep enough working area.
+ */
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --page-content-x: 20px;
+  --page-content-top: 12px;
+  --page-content-bottom: 20px;
+  --page-panel-padding: var(--space-6);
+  --page-header-gap: var(--space-4);
+  --page-header-bottom: var(--space-5);
+  --title-description-gap: var(--space-2);
+  --section-gap: var(--space-4);
+  --card-padding: var(--space-4);
+  --toolbar-padding: var(--space-4);
+  --toolbar-gap: var(--space-3);
+  --action-gap: var(--space-2);
+
+  --dense-panel-padding: var(--space-3);
+  --dense-section-gap: var(--space-2);
+}
+
+/* Application content frame. */
+.admin-content {
+  padding:
+    var(--page-content-top)
+    var(--page-content-x)
+    var(--page-content-bottom);
+}
+
+/* Standard management pages. Dense timetable pages keep their own scale. */
+.panel:not(.rule-settings-page):not(.workbench-panel):not(.timetable-manage-panel) {
+  padding: var(--page-panel-padding);
+}
+
+.dashboard-panel,
+.schedule-panel,
+.user-management-panel {
+  gap: var(--section-gap);
+}
+
+/* A page heading always uses the same title/description rhythm. */
+.dashboard-intro h1,
+.plan-header h1,
+.user-management-head h1,
+.base-main-head h1,
+.rule-module-head h1,
+.teacher-hours-header h1,
+.school-feature-head h1 {
+  margin: 0;
+}
+
+.dashboard-intro p,
+.plan-header p,
+.user-management-head p,
+.rule-module-head p,
+.teacher-hours-header p,
+.school-feature-head p {
+  margin: var(--title-description-gap) 0 0;
+}
+
+.plan-header,
+.user-management-head,
+.base-main-head,
+.teacher-hours-header,
+.school-feature-head {
+  gap: var(--page-header-gap);
+}
+
+.base-main-head,
+.teacher-hours-header,
+.school-feature-head {
+  margin-bottom: var(--page-header-bottom);
+}
+
+/* Repeated toolbars and action clusters. */
+.user-management-toolbar,
+.teacher-hours-toolbar,
+.class-table-toolbar,
+.teacher-entry-actions,
+.course-toolbar-row {
+  gap: var(--toolbar-gap);
+}
+
+.user-management-tabs,
+.user-management-batch-actions,
+.base-main-head-actions,
+.teacher-entry-toolbar-actions,
+.arrangement-head-tools,
+.rule-head-actions,
+.rule-page-footer-actions,
+.tm-actions,
+.dialog-actions {
+  gap: var(--action-gap);
+}
+
+.teacher-hours-toolbar,
+.course-toolbar {
+  padding: var(--toolbar-padding);
+}
+
+.plan-card {
+  padding: var(--card-padding);
+  gap: var(--space-3);
+}
+
+/* Rule pages share the same page and section spacing. */
+.rule-module-head {
+  gap: var(--page-header-gap);
+  padding: var(--page-panel-padding) var(--page-panel-padding) var(--section-gap);
+}
+
+.rule-primary-nav {
+  padding-right: var(--page-panel-padding);
+  padding-left: var(--page-panel-padding);
+}
+
+.rule-head {
+  gap: var(--page-header-gap);
+  padding: var(--page-header-bottom) var(--page-panel-padding) var(--space-3);
+}
+
+.rule-page-footer-actions {
+  padding-top: var(--section-gap);
+}
+
+/* Navigation groups use the same vertical rhythm as page content. */
+.base-side {
+  padding: var(--space-3) 0;
+}
+
+.base-side h2 {
+  padding: var(--space-3) var(--space-4);
+}
+
+.base-side ul {
+  margin-top: var(--space-1);
+}
+
+.menu-group + .menu-group {
+  margin-top: var(--space-2);
+}
+
+.base-side .group-title {
+  padding: var(--space-2) var(--space-4) var(--space-1);
+}
+
+.base-side li {
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-6);
+}
+
+/* Timetable workspaces intentionally use the compact spacing tier. */
+.workbench-panel,
+.timetable-manage-panel {
+  padding: var(--dense-panel-padding);
+  gap: var(--dense-section-gap);
+}
+
+.workbench-header,
+.tm-topbar,
+.tm-filterbar {
+  gap: var(--dense-section-gap);
+}
+
+@media (max-width: 1366px) {
+  :root {
+    --page-content-x: 16px;
+    --page-content-top: 10px;
+    --page-content-bottom: 16px;
+    --page-panel-padding: 16px;
+    --page-header-bottom: 16px;
+    --toolbar-padding: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --page-content-x: 8px;
+    --page-content-top: 8px;
+    --page-content-bottom: 12px;
+    --page-panel-padding: 12px;
+    --page-header-gap: 12px;
+    --page-header-bottom: 12px;
+    --section-gap: 12px;
+    --toolbar-padding: 12px;
+    --toolbar-gap: 8px;
+  }
+
+  .base-side li {
+    padding: 10px 12px 10px 18px;
+  }
+}

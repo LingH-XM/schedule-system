@@ -5,8 +5,16 @@
   --bg-soft: #eaf0fa;
   --bg-shell: #f4f7fb;
   --line: #d9e2f0;
-  --text-main: #24324a;
-  --text-muted: #5f6f8a;
+  --text-heading: #24324a;
+  --text-body: #354563;
+  --text-secondary: #4f607e;
+  --text-helper: #5f6f8a;
+  --text-disabled: #7c879c;
+  --text-link: #3f6fbf;
+  --text-link-hover: #345fa8;
+  --text-inverse: #ffffff;
+  --text-main: var(--text-heading);
+  --text-muted: var(--text-secondary);
   --primary: #3f6fbf;
   --primary-hover: #345fa8;
   --primary-dark: #2d538f;
@@ -16,7 +24,13 @@
   --success: #2f7d5c;
   --warning: #b77417;
   --danger: #c23f4c;
+  --danger-hover: #a93240;
   --nav-deep: #27466f;
+  --skeleton-base: #e9eef6;
+  --skeleton-highlight: #f7f9fc;
+  --skeleton-surface: #ffffff;
+  --skeleton-panel: #f8fafd;
+  --skeleton-line: #e3e9f3;
 
   --el-color-primary: #3f6fbf;
   --el-color-primary-light-3: #7c9bd2;
@@ -37,6 +51,8 @@
   --el-fill-color-light: #f4f7fb;
   --el-fill-color-lighter: #f8fafd;
   --el-bg-color-page: #f4f7fb;
+  --el-skeleton-color: var(--skeleton-base);
+  --el-skeleton-to-color: var(--skeleton-highlight);
 }
 
 * {
@@ -605,7 +621,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0;
-  color: #71809a;
+  color: var(--text-secondary);
 }
 
 .user-identity-main {
@@ -646,7 +662,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .header-term-display span {
-  color: #71809a;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0;
@@ -706,6 +722,16 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   padding: 0 18px;
   border-radius: 10px;
   font-size: 15px;
+  font-weight: 600;
+}
+
+.admin-content .batch-delete-btn.el-button {
+  min-width: 140px;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: var(--font-size-body);
   font-weight: 600;
 }
 
@@ -1440,7 +1466,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .dialog-tip {
   margin: 0;
-  color: #7182a5;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1676,7 +1702,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 .group-title {
   margin: 0;
   padding: 8px 16px 2px;
-  color: #98a2b5;
+  color: var(--text-disabled);
   font-size: 14px;
 }
 
@@ -1798,7 +1824,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .table-row.empty-row {
-  color: #8e99b0;
+  color: var(--text-helper);
 }
 
 .name-cell {
@@ -1859,7 +1885,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .campus-empty {
-  color: #8e99b0;
+  color: var(--text-helper);
   padding: 16px 0;
 }
 
@@ -1868,7 +1894,8 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .campus-el-form .el-input,
-.campus-el-form .el-select {
+.campus-el-form .el-select,
+.campus-el-form .el-input-number {
   width: 100%;
 }
 
@@ -1901,50 +1928,29 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .coming-soon {
-  color: #8e99b0;
+  color: var(--text-disabled);
 }
 
 .class-setting-panel {
   border: 1px solid #e3e8f8;
   border-radius: 10px;
-  padding: 14px;
+  padding: 12px;
   background: #fff;
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .class-setting-toolbar {
   border: 1px solid #dfe8fb;
-  border-radius: 16px;
-  padding: 14px 16px 10px;
+  border-radius: 14px;
+  padding: 12px 14px;
   background: linear-gradient(180deg, #fbfcff 0%, #f5f8ff 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
-.class-setting-toolbar-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.class-setting-toolbar-head h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: #203154;
-}
-
-.class-setting-toolbar-head p {
-  margin: 6px 0 0;
-  color: #7081a8;
-  font-size: 13px;
-}
-
 .class-setting-form-inline {
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .class-setting-config-row {
@@ -1955,20 +1961,20 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .class-setting-grade-section {
-  margin-top: 2px;
-  padding: 14px 16px;
+  margin-top: 0;
+  padding: 9px 12px;
   border: 1px solid #edf1fa;
-  border-radius: 12px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.88);
 }
 
 .class-setting-grade-section p {
   color: #4f628d;
-  margin-bottom: 10px;
+  margin-bottom: 7px;
 }
 
 .class-setting-form-inline .el-form-item {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .class-setting-form-inline .el-form-item__label {
@@ -1983,21 +1989,18 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   width: 180px;
 }
 
-.class-setting-generate-item {
-  margin-bottom: 0;
-}
-
-.class-setting-generate-item .el-form-item__content {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  gap: 12px;
-}
-
 .class-setting-generate-tip {
   color: #7a89ab;
   font-size: 13px;
+  white-space: nowrap;
+}
+
+.class-setting-grade-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-left: auto;
 }
 
 .class-table-toolbar {
@@ -2060,24 +2063,22 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .class-grade-stats {
-  display: grid;
-  gap: 8px;
-}
-
-.class-grade-stats-title {
-  color: #5f6f93;
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 32px;
 }
 
 .class-grade-stats-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
-.class-setting-tip {
-  margin: 0;
-  color: #6f7fa3;
+.class-grade-stats-list .el-tag {
+  height: 26px;
+  padding-inline: 9px;
 }
 
 .teacher-entry-panel {
@@ -2145,6 +2146,8 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
 }
 
 .teaching-info-label {
@@ -2174,32 +2177,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .teaching-info-top-filters .el-select {
   width: 180px;
-}
-
-.teaching-info-grade-tabs {
-  margin-top: 2px;
-}
-
-.teaching-info-grade-tabs .el-tabs__nav-wrap::after {
-  background-color: #e6ebf7;
-}
-
-.teaching-info-grade-tabs .el-tabs__item {
-  height: 42px;
-  line-height: 42px;
-  font-size: 15px;
-  padding: 0 16px;
-}
-
-.teaching-info-grade-tabs.el-tabs--card > .el-tabs__header .el-tabs__item {
-  border: 0;
-  background: transparent;
-  color: #30456f;
-}
-
-.teaching-info-grade-tabs.el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
-  color: var(--primary);
-  font-weight: 700;
 }
 
 .teaching-info-cell-text {
@@ -2614,10 +2591,8 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   justify-content: flex-start;
 }
 
-.course-toolbar-group--danger {
+.course-toolbar-batch-delete {
   margin-left: auto;
-  border-color: #f4d8d8;
-  background: #fff9f9;
 }
 
 .course-toolbar-label {
@@ -2665,12 +2640,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   background: var(--primary);
   color: #fff;
   box-shadow: none;
-}
-
-@media (max-width: 1100px) {
-  .course-toolbar-group--danger {
-    margin-left: 0;
-  }
 }
 
 .class-hours-panel {
@@ -3265,19 +3234,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
     gap: 0;
   }
 
-  .class-setting-toolbar-head {
-    margin-bottom: 4px;
-  }
-
-  .class-setting-generate-item {
-    margin-left: 0;
-  }
-
-  .class-setting-generate-item .el-form-item__content {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
   .class-table-filter-select,
   .class-table-search {
     width: 100%;
@@ -3290,6 +3246,12 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
   .grade-check-row-main {
     flex-basis: 100%;
+  }
+
+  .class-setting-grade-actions {
+    width: 100%;
+    justify-content: space-between;
+    margin-left: 0;
   }
 }
 
@@ -3646,7 +3608,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .save-status-text {
   font-size: 12px;
-  color: #7a88a6;
+  color: var(--text-helper);
   margin-right: 4px;
 }
 
@@ -3771,7 +3733,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .publish-scope-options .el-radio__label small {
   overflow: hidden;
-  color: #8290aa;
+  color: var(--text-helper);
   font-size: 12px;
   line-height: 1.4;
   text-overflow: ellipsis;
@@ -3822,7 +3784,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .publish-type-copy span {
-  color: #8290aa;
+  color: var(--text-helper);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -4169,7 +4131,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .pool-empty {
-  color: #8a97b3;
+  color: var(--text-helper);
   font-size: 13px;
   text-align: center;
   padding: 12px 8px;
@@ -4895,25 +4857,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   background: var(--surface-muted, #f8fafd);
 }
 
-.advanced-settings-intro {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
-  gap: 12px;
-}
-
-.advanced-settings-intro strong {
-  flex: 0 0 auto;
-  color: var(--text-primary, #24324a);
-  font-size: 16px;
-}
-
-.advanced-settings-intro span {
-  color: var(--text-secondary, #5f6f8a);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
 .advanced-settings-tabs {
   display: inline-flex;
   flex: 0 0 auto;
@@ -5037,6 +4980,14 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   align-items: center;
 }
 
+.rule-page-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+}
+
 .rule-head-actions .el-button {
   min-width: 62px;
   height: 34px;
@@ -5050,8 +5001,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   background: transparent;
   color: var(--primary);
 }
-
-/* legacy styles removed after migrating to Element Plus el-menu */
 
 .fixed-point-page {
   display: grid;
@@ -5072,7 +5021,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
   border: 1px dashed #c9d8f2;
   border-radius: 12px;
   background: #fbfcff;
-  color: #7182a5;
+  color: var(--text-secondary);
   font-size: 14px;
   text-align: center;
 }
@@ -5099,7 +5048,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 .admin-kpi-title {
   margin: 0;
   font-size: 13px;
-  color: #8a97b3;
+  color: var(--text-helper);
 }
 
 .admin-kpi-card strong {
@@ -5667,12 +5616,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
     margin: 14px 14px 0;
   }
 
-  .advanced-settings-intro {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-  }
-
   .advanced-settings-tabs {
     width: 100%;
   }
@@ -6029,7 +5972,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 }
 
 .course-main-summary-item .empty {
-  color: #8a97b3;
+  color: var(--text-helper);
 }
 
 .course-relation-page {
@@ -6225,7 +6168,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .course-area-meta-tip {
   margin: -4px 0 0;
-  color: #6f7f9f;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -6307,7 +6250,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .course-area-empty {
   padding: 20px 12px;
-  color: #7a88a6;
+  color: var(--text-helper);
   font-size: 14px;
   text-align: center;
   border: 1px dashed #d7dfef;
@@ -6459,7 +6402,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 .consecutive-setting-tip {
   margin: 6px 0 12px;
   font-size: 16px;
-  color: #6f7f9f;
+  color: var(--text-secondary);
 }
 
 .consecutive-setting-grid {
@@ -6570,7 +6513,7 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .consecutive-section-heading p {
   margin: 4px 0 0;
-  color: #7a88a6;
+  color: var(--text-helper);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -7407,6 +7350,11 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
     padding-right: 12px;
     padding-left: 12px;
     font-size: 14px;
+  }
+
+  .admin-content .batch-delete-btn.el-button {
+    min-width: 126px;
+    min-height: 36px;
   }
 
   .user-identity-copy,

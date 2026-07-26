@@ -1,0 +1,194 @@
+/*
+ * Global text color system
+ *
+ * Color is assigned by meaning rather than by component. Course cards and
+ * status surfaces keep their own foreground colors because they communicate
+ * business state.
+ */
+:root {
+  --el-text-color-primary: var(--text-heading);
+  --el-text-color-regular: var(--text-body);
+  --el-text-color-secondary: var(--text-secondary);
+  --el-text-color-placeholder: var(--text-helper);
+  --el-text-color-disabled: var(--text-disabled);
+}
+
+body {
+  color: var(--text-body);
+}
+
+/* Reusable semantic classes for all new screens. */
+.text-heading {
+  color: var(--text-heading);
+}
+
+.text-body {
+  color: var(--text-body);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.text-helper,
+.text-caption {
+  color: var(--text-helper);
+}
+
+.text-disabled {
+  color: var(--text-disabled);
+}
+
+.text-link {
+  color: var(--text-link);
+}
+
+.text-link:hover {
+  color: var(--text-link-hover);
+}
+
+/* Application shell. */
+.brand,
+.nav-link {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.nav-link:hover,
+.nav-link.router-link-active {
+  color: var(--text-inverse);
+}
+
+.header-term-display strong,
+.user-identity-name {
+  color: var(--text-heading);
+}
+
+.header-term-display span,
+.user-identity-label {
+  color: var(--text-secondary);
+}
+
+/* Page and section headings. */
+.dashboard-intro h1,
+.plan-header h1,
+.user-management-head h1,
+.base-main-head h1,
+.rule-module-head h1,
+.rule-head h1,
+.teacher-hours-header h1,
+.school-feature-head h1,
+.teacher-hours-table-heading h2,
+.tm-schedule-title {
+  color: var(--text-heading);
+}
+
+.dashboard-intro p,
+.plan-header p,
+.user-management-head p,
+.rule-module-head p,
+.rule-head p,
+.teacher-hours-header p,
+.school-feature-head p {
+  color: var(--text-secondary);
+}
+
+/* Basic-data and rule navigation. */
+.base-side h2 {
+  color: var(--text-heading);
+}
+
+.base-side .group-title {
+  color: var(--text-disabled);
+}
+
+.base-side li {
+  color: var(--text-body);
+}
+
+.base-side li.active {
+  color: var(--text-link);
+}
+
+.rule-primary-menu.el-menu--horizontal > .el-menu-item,
+.common-rule-tabs .el-tabs__item {
+  color: var(--text-secondary);
+}
+
+.rule-primary-menu.el-menu--horizontal > .el-menu-item:hover,
+.rule-primary-menu.el-menu--horizontal > .el-menu-item.is-active,
+.common-rule-tabs .el-tabs__item:hover,
+.common-rule-tabs .el-tabs__item.is-active {
+  color: var(--text-link);
+}
+
+/* Element Plus controls and data tables. */
+.el-form-item__label,
+.el-checkbox__label,
+.el-radio__label {
+  color: var(--text-body);
+}
+
+.el-input__inner,
+.el-select__placeholder,
+.el-select__selected-item {
+  color: var(--text-body);
+}
+
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--text-helper);
+}
+
+.el-table {
+  color: var(--text-body);
+}
+
+.el-table th.el-table__cell {
+  color: var(--text-secondary);
+}
+
+.el-table td.el-table__cell {
+  color: var(--text-body);
+}
+
+.el-button.is-link,
+.text-btn {
+  color: var(--text-link);
+}
+
+.el-button.is-link:hover,
+.text-btn:hover {
+  color: var(--text-link-hover);
+}
+
+.el-button.el-button--danger.is-link,
+.el-button.el-button--danger.is-text,
+.danger-link {
+  color: var(--danger);
+}
+
+.el-button.el-button--danger.is-link:hover,
+.el-button.el-button--danger.is-text:hover,
+.danger-link:hover {
+  color: var(--danger-hover);
+}
+
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  color: var(--text-disabled);
+}
+
+.state.done,
+.success {
+  color: var(--success);
+}
+
+.state.required,
+.danger,
+.error {
+  color: var(--danger);
+}
+
+.warning {
+  color: var(--warning);
+}
