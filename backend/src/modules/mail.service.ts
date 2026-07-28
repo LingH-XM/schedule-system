@@ -10,27 +10,23 @@ type PasswordResetMail = {
   token: string
 }
 
-const DEFAULT_SMTP_HOST = 'smtp.qiye.aliyun.com'
-const DEFAULT_SMTP_USER = 'account@suishichuma.com'
-const DEFAULT_PUBLIC_URL = 'https://class.suishichuma.com'
-
 @Injectable()
 export class MailService {
   private transporter: Transporter | null = null
 
   isConfigured(): boolean {
     return Boolean(
-      (readSetting('SMTP_HOST') || DEFAULT_SMTP_HOST) &&
-      (readSetting('SMTP_USER') || DEFAULT_SMTP_USER) &&
+      readSetting('SMTP_HOST') &&
+      readSetting('SMTP_USER') &&
       readSetting('SMTP_PASSWORD')
     )
   }
 
   async sendPasswordResetEmail(input: PasswordResetMail): Promise<void> {
     const transporter = this.getTransporter()
-    const publicUrl = (readSetting('APP_PUBLIC_URL') || DEFAULT_PUBLIC_URL).replace(/\/+$/, '')
+    const publicUrl = requireSetting('APP_PUBLIC_URL').replace(/\/+$/, '')
     const resetUrl = `${publicUrl}/password-reset?token=${encodeURIComponent(input.token)}`
-    const from = readSetting('SMTP_FROM') || readSetting('SMTP_USER') || DEFAULT_SMTP_USER
+    const from = readSetting('SMTP_FROM') || requireSetting('SMTP_USER')
     const displayName = escapeHtml(input.name || '用户')
 
     await transporter.sendMail({
@@ -71,12 +67,12 @@ export class MailService {
       : port === 465
 
     this.transporter = nodemailer.createTransport({
-      host: readSetting('SMTP_HOST') || DEFAULT_SMTP_HOST,
+      host: requireSetting('SMTP_HOST'),
       port,
       secure,
       auth: {
-        user: readSetting('SMTP_USER') || DEFAULT_SMTP_USER,
-        pass: readSetting('SMTP_PASSWORD')
+        user: requireSetting('SMTP_USER'),
+        pass: requireSetting('SMTP_PASSWORD')
       }
     })
     return this.transporter
@@ -110,6 +106,12 @@ function readSetting(key: string): string {
     }
   }
   return String(envFileCache.get(key) || '').trim()
+}
+
+function requireSetting(key: string): string {
+  const value = readSetting(key)
+  if (!value) throw new Error(`${key} is not configured`)
+  return value
 }
 
 function escapeHtml(value: string): string {
