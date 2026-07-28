@@ -1,23 +1,26 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import LoginView from '../views/LoginView.vue'
-import AdminLayout from '../layouts/AdminLayout.vue'
-import DashboardPage from '../views/admin/DashboardPage.vue'
-import UserManagementPage from '../views/admin/UserManagementPage.vue'
-import BasicDataPage from '../views/admin/BasicDataPage.vue'
-import RuleSettingsPage from '../views/admin/RuleSettingsPage.vue'
-import SchedulesPage from '../views/admin/SchedulesPage.vue'
-import ScheduleWorkbenchPage from '../views/admin/ScheduleWorkbenchPage.vue'
-import TeacherHoursStatisticsPage from '../views/admin/TeacherHoursStatisticsPage.vue'
-import TimetableManagementPage from '../views/admin/TimetableManagementPage.vue'
-import HelpCenterPage from '../views/admin/HelpCenterPage.vue'
-import SchoolFeatureConfigPage from '../views/admin/SchoolFeatureConfigPage.vue'
 import { getCurrentUser, hasPermission, hasRequiredRole, isAuthenticated } from '../services/auth'
 import type { AuthRole } from '../types/auth'
+
+const LoginView = () => import('../views/LoginView.vue')
+const PasswordResetView = () => import('../views/PasswordResetView.vue')
+const AdminLayout = () => import('../layouts/AdminLayout.vue')
+const DashboardPage = () => import('../views/admin/DashboardPage.vue')
+const UserManagementPage = () => import('../views/admin/UserManagementPage.vue')
+const BasicDataPage = () => import('../views/admin/BasicDataPage.vue')
+const RuleSettingsPage = () => import('../views/admin/RuleSettingsPage.vue')
+const SchedulesPage = () => import('../views/admin/SchedulesPage.vue')
+const ScheduleWorkbenchPage = () => import('../views/admin/ScheduleWorkbenchPage.vue')
+const TeacherHoursStatisticsPage = () => import('../views/admin/TeacherHoursStatisticsPage.vue')
+const TimetableManagementPage = () => import('../views/admin/TimetableManagementPage.vue')
+const HelpCenterPage = () => import('../views/admin/HelpCenterPage.vue')
+const SchoolFeatureConfigPage = () => import('../views/admin/SchoolFeatureConfigPage.vue')
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/password-reset', name: 'passwordReset', component: PasswordResetView },
     {
       path: '/help/:page?',
       name: 'helpCenter',

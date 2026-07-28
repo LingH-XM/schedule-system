@@ -7,6 +7,7 @@ export type ManagedUser = {
   schoolName: string
   username: string
   phone?: string | null
+  email?: string | null
   name: string
   role: AuthRole
   permissions: string[]
@@ -22,6 +23,7 @@ export type ManagedUserInput = {
   name: string
   schoolName?: string
   phone?: string
+  email?: string
   role: AuthRole
   permissions?: string[]
   campusIds?: string[]
@@ -32,6 +34,8 @@ type FailureReason =
   | 'NOT_FOUND'
   | 'PHONE_EXISTS'
   | 'INVALID_PHONE'
+  | 'EMAIL_EXISTS'
+  | 'INVALID_EMAIL'
   | 'SCHOOL_ID_IMMUTABLE'
   | 'INVALID_PASSWORD'
   | 'UNAVAILABLE'

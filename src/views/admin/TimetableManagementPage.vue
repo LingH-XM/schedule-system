@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import ExcelJS from 'exceljs'
-import { saveAs } from 'file-saver'
+import type ExcelJS from 'exceljs'
 import {
   basicDataRepository,
   type Campus,
@@ -24,6 +23,7 @@ import {
   loadRuleSettingsSnapshot,
   type GlobalFixedPointRecord
 } from '../../services/ruleSettings'
+import { loadExcelJs, loadFileSaver } from '../../services/excelLoader'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabel } from '../../utils/termLabel'
 import { compareGradeLabels } from '../../utils/gradeOrder'
@@ -1229,6 +1229,7 @@ async function exportAs(type: 'excel' | 'pdf'): Promise<void> {
     return
   }
 
+  const [ExcelJS, { saveAs }] = await Promise.all([loadExcelJs(), loadFileSaver()])
   const workbook = new ExcelJS.Workbook()
   const campusName = String(campusNameById.value.get(selectedCampusId.value) || '本校区')
   const selectedGradeName = selectedGrade.value === ALL_GRADE_VALUE ? '全年级' : String(selectedGrade.value || '全年级')

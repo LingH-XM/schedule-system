@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { notify } from './utils/notify'
 import { getAuthToken, getCurrentUser, isAuthenticated, logout } from './services/auth'
 import { fetchSystemHealth, isApiSourceEnabled, SystemHealthApiError } from './services/systemHealthApi'
@@ -66,5 +67,7 @@ onBeforeUnmount(() => window.removeEventListener('auth-session-updated', checkBa
 </script>
 
 <template>
-  <RouterView />
+  <el-config-provider :locale="zhCn">
+    <RouterView />
+  </el-config-provider>
 </template>

@@ -415,24 +415,6 @@ p {
   line-height: 1.55;
 }
 
-.login-recovery-dialog .el-dialog__body {
-  padding-top: 8px;
-  color: #5d6d73;
-  line-height: 1.75;
-}
-
-.login-recovery-dialog .el-dialog__body p {
-  margin: 0 0 8px;
-}
-
-.login-recovery-dialog.el-dialog {
-  border: 1px solid rgba(255, 255, 255, 0.76);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 28px 80px rgba(20, 45, 50, 0.2);
-  backdrop-filter: blur(22px) saturate(145%);
-}
-
 button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):not(.account-phone-binding):not([class^='el-']):not([class*=' el-']):not(.showcase button) {
   margin-top: 8px;
   border: 0;
@@ -451,6 +433,103 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):not(.account-phone-binding):not([class^='el-']):not([class*=' el-']):not(.showcase button):disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+.password-reset-panel {
+  position: relative;
+}
+
+.password-reset-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px !important;
+  margin: 0 0 32px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  color: var(--text-muted) !important;
+  background: transparent !important;
+  font-size: 14px !important;
+  font-weight: 600;
+  line-height: 24px !important;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.password-reset-back:hover {
+  color: var(--primary) !important;
+  background: transparent !important;
+}
+
+.password-reset-back:focus-visible {
+  border-radius: 4px !important;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+.password-reset-form {
+  margin-top: 34px;
+}
+
+.password-reset-security-note {
+  margin: 22px 0 0;
+  color: #718198;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.password-reset-result {
+  display: grid;
+  justify-items: start;
+  padding: 22px 0 8px;
+}
+
+.password-reset-result-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 24px;
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--success);
+  font-size: 24px;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(47, 125, 92, 0.18);
+}
+
+.password-reset-result h2 {
+  margin: 0;
+  color: var(--text-main);
+  font-size: clamp(28px, 2.4vw, 36px);
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.password-reset-result p {
+  margin: 14px 0 30px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.password-reset-inline-action {
+  justify-self: start;
+  margin: 4px 0 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  color: var(--danger) !important;
+  background: transparent !important;
+  font-size: 12px !important;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.password-reset-inline-action:hover {
+  color: #a63240 !important;
+  background: transparent !important;
 }
 
 .admin-shell {
@@ -857,7 +936,10 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 .account-phone-cell {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -1216,7 +1298,6 @@ button:not(.el-button):not(.el-dialog__headerbtn):not(.btn-prev):not(.btn-next):
 
 @media (prefers-reduced-transparency: reduce) {
   .login-panel-inner,
-  .login-recovery-dialog.el-dialog,
   .login-brand-mark {
     background: #ffffff;
     backdrop-filter: none;

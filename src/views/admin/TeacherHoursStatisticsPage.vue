@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Refresh } from '@element-plus/icons-vue'
-import * as XLSX from 'xlsx'
 import {
   basicDataRepository,
   type Campus,
@@ -13,6 +12,7 @@ import {
   type SchedulePlan,
   type WorkbenchPersistSnapshot
 } from '../../services/scheduleStateRepository'
+import { loadXlsx } from '../../services/excelLoader'
 import { notify } from '../../utils/notify'
 import AppContentSkeleton from '../../components/AppContentSkeleton.vue'
 
@@ -260,12 +260,13 @@ function rowIndex(index: number): number {
   return (currentPage.value - 1) * pageSize.value + index + 1
 }
 
-function exportStatistics(): void {
+async function exportStatistics(): Promise<void> {
   if (sortedRows.value.length === 0) {
     notify.warning('当前筛选条件下暂无可导出的教师课时数据。')
     return
   }
   try {
+    const XLSX = await loadXlsx()
     const headers = ['序号', '教师姓名', '校区', '周课时要求', '已排课时', '课时差额', '完成率', '状态']
     const rows = sortedRows.value.map((item, index) => [
       index + 1,

@@ -74,6 +74,40 @@ export async function login(payload: LoginPayload): Promise<LoginResult> {
   }
 }
 
+export async function requestPasswordReset(identifier: string): Promise<{
+  ok: boolean
+  mailConfigured?: boolean
+}> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/auth/password-reset/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: identifier.trim() })
+    })
+    if (!response.ok) return { ok: false }
+    return response.json()
+  } catch {
+    return { ok: false }
+  }
+}
+
+export async function confirmPasswordReset(token: string, password: string): Promise<{
+  ok: boolean
+  reason?: 'INVALID_TOKEN' | 'INVALID_PASSWORD' | 'UNAVAILABLE'
+}> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/auth/password-reset/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password })
+    })
+    if (!response.ok) return { ok: false, reason: 'UNAVAILABLE' }
+    return response.json()
+  } catch {
+    return { ok: false, reason: 'UNAVAILABLE' }
+  }
+}
+
 export function logout(): void {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)

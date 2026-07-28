@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import loginCampusImage from '../assets/login-campus-modern-v2.png'
+import loginCampusImage from '../assets/login-campus-modern-v2.webp'
 import { getRememberedUsername, login } from '../services/auth'
 
 const route = useRoute()
@@ -11,7 +11,6 @@ const loading = ref(false)
 const errorMessage = ref('')
 const capsLockOn = ref(false)
 const lockRemainingSeconds = ref(0)
-const recoveryDialogVisible = ref(false)
 let lockTimer: ReturnType<typeof setInterval> | null = null
 
 const form = reactive({
@@ -55,7 +54,7 @@ function validateUsernameField(): boolean {
   fieldErrors.username = ''
 
   if (!username) {
-    fieldErrors.username = '请输入登录账号或手机号'
+    fieldErrors.username = '请输入登录账号、手机号或邮箱'
   } else if (username.length > 64) {
     fieldErrors.username = '登录账号不能超过 64 个字符'
   } else if (/\s/.test(username)) {
@@ -142,6 +141,21 @@ async function handleSubmit(): Promise<void> {
   await router.replace(resolveLoginDestination())
 }
 
+function openPasswordResetPage(): void {
+  const identifier = form.username.trim() || rememberedUsername
+  void router.push({
+    name: 'passwordReset',
+    query: identifier ? { identifier } : undefined
+  })
+}
+
+onMounted(() => {
+  const legacyToken = typeof route.query.resetToken === 'string' ? route.query.resetToken.trim() : ''
+  if (legacyToken) {
+    void router.replace({ name: 'passwordReset', query: { token: legacyToken } })
+  }
+})
+
 onBeforeUnmount(clearLockTimer)
 </script>
 
@@ -176,19 +190,19 @@ onBeforeUnmount(clearLockTimer)
 
         <header class="login-heading">
           <h2>欢迎回来</h2>
-          <p>使用登录账号或已绑定的手机号进入系统</p>
+          <p>使用登录账号、手机号或绑定邮箱进入系统</p>
         </header>
 
         <form class="login-form" novalidate @submit.prevent="handleSubmit">
           <div class="login-field" :class="{ 'has-error': fieldErrors.username }">
-            <label for="username">登录账号 / 手机号</label>
+            <label for="username">登录账号 / 手机号 / 邮箱</label>
             <el-input
               id="username"
               v-model="form.username"
               maxlength="64"
               autocomplete="username"
               inputmode="text"
-              placeholder="请输入登录账号或手机号"
+              placeholder="请输入登录账号、手机号或邮箱"
               :aria-invalid="Boolean(fieldErrors.username)"
               aria-describedby="username-error"
               autofocus
@@ -225,7 +239,7 @@ onBeforeUnmount(clearLockTimer)
 
           <div class="login-options">
             <el-checkbox v-model="form.remember">记住登录账号</el-checkbox>
-            <button class="login-recovery-link" type="button" @click="recoveryDialogVisible = true">
+            <button class="login-recovery-link" type="button" @click="openPasswordResetPage">
               忘记密码？
             </button>
           </div>
@@ -254,18 +268,5 @@ onBeforeUnmount(clearLockTimer)
       </div>
     </section>
 
-    <el-dialog
-      v-model="recoveryDialogVisible"
-      title="重置登录密码"
-      width="420px"
-      append-to-body
-      class="login-recovery-dialog"
-    >
-      <p>为了保护学校数据，当前不支持通过公开页面自行找回密码。</p>
-      <p>请联系本校系统管理员，在“账户管理”中为你的账号重置密码。</p>
-      <template #footer>
-        <el-button type="primary" @click="recoveryDialogVisible = false">我知道了</el-button>
-      </template>
-    </el-dialog>
   </main>
 </template>

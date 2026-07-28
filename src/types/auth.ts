@@ -11,6 +11,7 @@ export type AuthUser = {
   schoolName?: string
   username: string
   phone?: string | null
+  email?: string | null
   name: string
   role: AuthRole
   permissions: string[]

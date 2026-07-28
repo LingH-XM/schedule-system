@@ -2,8 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
-import * as XLSX from 'xlsx'
 import { basicDataRepository, sortCampusesByOrder } from '../../services/basicDataRepository'
+import { loadXlsx } from '../../services/excelLoader'
 import { loadWorkbenchPersistSnapshot, saveWorkbenchPersistSnapshot } from '../../services/scheduleStateRepository'
 import { notify } from '../../utils/notify'
 import { formatSchoolTermLabelFromParts } from '../../utils/termLabel'
@@ -4010,6 +4010,7 @@ function exportCsv(filename: string, rows: string[][]): void {
 }
 
 async function exportExcel(filename: string, rows: string[][], sheetName = 'Sheet1'): Promise<void> {
+  const XLSX = await loadXlsx()
   const workbook = XLSX.utils.book_new()
   const worksheet = XLSX.utils.aoa_to_sheet(rows)
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
@@ -4017,6 +4018,7 @@ async function exportExcel(filename: string, rows: string[][], sheetName = 'Shee
 }
 
 async function exportExcelWorkbook(filename: string, sheets: Array<{ name: string; rows: string[][] }>): Promise<void> {
+  const XLSX = await loadXlsx()
   const workbook = XLSX.utils.book_new()
   sheets.forEach((sheet) => {
     const worksheet = XLSX.utils.aoa_to_sheet(sheet.rows)
@@ -4026,6 +4028,7 @@ async function exportExcelWorkbook(filename: string, sheets: Array<{ name: strin
 }
 
 async function parseSpreadsheetRows(file: File): Promise<string[][]> {
+  const XLSX = await loadXlsx()
   const fileBuffer = await file.arrayBuffer()
   const workbook = XLSX.read(fileBuffer, { type: 'array' })
   const firstSheetName = workbook.SheetNames?.[0]
@@ -4041,6 +4044,7 @@ async function parseSpreadsheetRows(file: File): Promise<string[][]> {
 }
 
 async function parseSpreadsheetWorkbook(file: File): Promise<Array<{ name: string; rows: string[][] }>> {
+  const XLSX = await loadXlsx()
   const fileBuffer = await file.arrayBuffer()
   const workbook = XLSX.read(fileBuffer, { type: 'array' })
   return workbook.SheetNames.map((name) => {

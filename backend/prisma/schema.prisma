@@ -26,6 +26,7 @@ model User {
   schoolId     String   @map("accountId")
   username     String   @unique
   phone        String?  @unique
+  email        String?  @unique
   passwordHash String
   name         String
   role         String   @default("school_admin")
@@ -39,11 +40,24 @@ model User {
   lastLoginAt  DateTime?
   school       Account  @relation(fields: [schoolId], references: [schoolId], onDelete: Restrict)
   scopes       UserScope[]
+  passwordResetTokens PasswordResetToken[]
   createdBy    User?    @relation("UserCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   createdUsers User[]   @relation("UserCreator")
 
   @@index([schoolId])
   @@index([createdByUserId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
 }
 
 model UserScope {

@@ -52,6 +52,7 @@ const form = reactive({
   schoolName: '',
   name: '',
   phone: '',
+  email: '',
   role: 'grade_scheduler' as AuthRole,
   campusIds: [] as string[],
   grades: [] as string[]
@@ -205,6 +206,7 @@ function openCreateDialog(): void {
   form.schoolName = isSuperAdmin.value ? '' : currentUser.value?.schoolName ?? ''
   form.name = ''
   form.phone = ''
+  form.email = ''
   form.role = isSuperAdmin.value ? 'school_admin' : 'grade_scheduler'
   form.campusIds = []
   form.grades = []
@@ -218,6 +220,7 @@ function openEditDialog(user: ManagedUser): void {
   form.schoolName = user.schoolName
   form.name = user.name
   form.phone = user.phone ?? ''
+  form.email = user.email ?? ''
   form.role = user.role
   form.campusIds = [...new Set(user.scopes.map((scope) => scope.campusId).filter((value) => value !== '*'))]
   form.grades = sortGradeLabels(user.scopes.map((scope) => scope.grade).filter((value) => value !== '*'))
@@ -269,6 +272,7 @@ async function submitPhoneBinding(): Promise<void> {
       schoolName: user.schoolName,
       name: user.name,
       phone,
+      email: user.email ?? '',
       role: user.role,
       permissions: user.permissions,
       campusIds: [...new Set(user.scopes.map((scope) => scope.campusId))],
@@ -292,6 +296,7 @@ async function submitCreate(): Promise<void> {
   const name = form.name.trim()
   const schoolName = form.schoolName.trim()
   const phone = form.phone.trim()
+  const email = form.email.trim()
 
   if (!name || (isSuperAdmin.value && !schoolName)) {
     errorMessage.value = isSuperAdmin.value ? '请填写学校名称和管理员姓名' : '请填写子账户使用人姓名'
@@ -308,6 +313,7 @@ async function submitCreate(): Promise<void> {
         schoolName,
         name,
         phone,
+        email,
         role: form.role,
         campusIds: form.campusIds,
         grades: form.grades
@@ -315,6 +321,8 @@ async function submitCreate(): Promise<void> {
       if (!result.ok) {
         if (result.reason === 'PHONE_EXISTS') errorMessage.value = '手机号已被绑定'
         else if (result.reason === 'INVALID_PHONE') errorMessage.value = '请输入正确的 11 位中国大陆手机号'
+        else if (result.reason === 'EMAIL_EXISTS') errorMessage.value = '邮箱已被其他账户绑定'
+        else if (result.reason === 'INVALID_EMAIL') errorMessage.value = '请输入正确的邮箱地址'
         else if (result.reason === 'SCHOOL_ID_IMMUTABLE') errorMessage.value = '学校编号不允许修改'
         else if (result.reason === 'FORBIDDEN') errorMessage.value = '默认管理员角色不能降级'
         else errorMessage.value = '更新账户失败'
@@ -325,6 +333,7 @@ async function submitCreate(): Promise<void> {
         name,
         schoolName: isSuperAdmin.value ? schoolName : undefined,
         phone,
+        email,
         role: form.role,
         campusIds: form.campusIds,
         grades: form.grades
@@ -332,6 +341,8 @@ async function submitCreate(): Promise<void> {
       if (!result.ok) {
         if (result.reason === 'PHONE_EXISTS') errorMessage.value = '手机号已被绑定'
         else if (result.reason === 'INVALID_PHONE') errorMessage.value = '请输入正确的 11 位中国大陆手机号'
+        else if (result.reason === 'EMAIL_EXISTS') errorMessage.value = '邮箱已被其他账户绑定'
+        else if (result.reason === 'INVALID_EMAIL') errorMessage.value = '请输入正确的邮箱地址'
         else errorMessage.value = '创建账户失败'
         return
       }
@@ -678,6 +689,7 @@ onBeforeUnmount(() => {
               <span>{{ row.phone ? formatPhone(row.phone) : '未绑定手机号' }}</span>
               <el-icon class="account-phone-binding-edit"><EditPen /></el-icon>
             </button>
+            <span class="account-summary-meta">{{ row.email || '未绑定邮箱' }}</span>
           </div>
         </template>
       </el-table-column>
@@ -771,6 +783,15 @@ onBeforeUnmount(() => {
         </el-form-item>
         <el-form-item label="登录手机号">
           <el-input v-model="form.phone" maxlength="11" placeholder="可选，绑定后可用手机号登录" />
+        </el-form-item>
+        <el-form-item label="重置密码邮箱">
+          <el-input
+            v-model="form.email"
+            maxlength="254"
+            type="email"
+            autocomplete="email"
+            placeholder="用于接收密码重置邮件"
+          />
         </el-form-item>
         <el-form-item v-if="editingUsername" label="学校编号">
           <el-input :model-value="form.schoolId" disabled />

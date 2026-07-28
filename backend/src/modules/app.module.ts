@@ -16,9 +16,10 @@ import { DataScopeService } from './data-scope.service.js'
 import { SchoolFeaturesController } from './school-features.controller.js'
 import { SchoolFeaturesService } from './school-features.service.js'
 import { HealthController } from './health.controller.js'
+import { MailService } from './mail.service.js'
 
 @Module({
   controllers: [AuthController, BasicDataController, RuleSettingsController, ScheduleStateController, SmartSchedulerController, SystemController, SchoolFeaturesController, HealthController],
-  providers: [AuthService, AuthGuard, DataScopeService, JsonStorageService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService, SchoolFeaturesService]
+  providers: [AuthService, AuthGuard, DataScopeService, JsonStorageService, MailService, PrismaService, SmartSchedulerService, SmartSchedulerQueueService, StructuredDataSyncService, SchoolFeaturesService]
 })
 export class AppModule {}

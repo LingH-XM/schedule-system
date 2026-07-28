@@ -1,7 +1,8 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common'
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common'
 import crypto from 'node:crypto'
 import type { Prisma } from '@prisma/client'
 import { PrismaService } from './prisma.service.js'
+import { MailService } from './mail.service.js'
 import {
   effectivePermissions,
   normalizeRole,
@@ -16,6 +17,8 @@ const DEFAULT_INITIAL_PASSWORD = '111111'
 const MAX_LOGIN_ATTEMPTS = 5
 const LOGIN_LOCK_MS = 10 * 60 * 1000
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000
+const PASSWORD_RESET_COOLDOWN_MS = 60 * 1000
 
 type LoginFailure = {
   ok: false
@@ -32,6 +35,7 @@ export type UserRecord = {
   schoolName: string
   username: string
   phone?: string | null
+  email?: string | null
   name: string
   role: AuthRole
   permissions: string[]
@@ -47,6 +51,7 @@ type CreateUserInput = {
   name: string
   schoolName?: string
   phone?: string
+  email?: string
   role: AuthRole
   permissions?: string[]
   campusIds?: string[]
@@ -60,10 +65,15 @@ type UpdateUserInput = CreateUserInput & {
 
 @Injectable()
 export class AuthService implements OnModuleInit {
+  private readonly logger = new Logger(AuthService.name)
   private readonly loginAttempts = new Map<string, LoginAttemptState>()
+  private readonly passwordResetRequests = new Map<string, number>()
   private readonly tokenSecret = process.env.AUTH_TOKEN_SECRET || 'schedule-system-local-development-secret'
 
-  constructor(@Inject(PrismaService) private readonly prismaService: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prismaService: PrismaService,
+    @Inject(MailService) private readonly mailService: MailService
+  ) {}
 
   async onModuleInit(): Promise<void> {
     await this.ensureSeedAdmin()
@@ -84,7 +94,8 @@ export class AuthService implements OnModuleInit {
         deletedAt: null,
         OR: [
           { username },
-          { phone: normalizePhone(username) || '__never_match__' }
+          { phone: normalizePhone(username) || '__never_match__' },
+          { email: normalizeEmail(username) || '__never_match__' }
         ]
       },
       include: { school: { select: { name: true, deletedAt: true } }, scopes: true }
@@ -110,6 +121,107 @@ export class AuthService implements OnModuleInit {
 
     const user = this.toUserRecord(row, row.school.name)
     return { ok: true as const, token: this.issueSession(user), user }
+  }
+
+  async requestPasswordReset(identifierRaw: string) {
+    const identifier = String(identifierRaw || '').trim().toLowerCase()
+    const response = { ok: true as const, mailConfigured: this.mailService.isConfigured() }
+    if (!identifier || identifier.length > 254) return response
+
+    const lastRequestedAt = this.passwordResetRequests.get(identifier) || 0
+    if (Date.now() - lastRequestedAt < PASSWORD_RESET_COOLDOWN_MS) return response
+    this.passwordResetRequests.set(identifier, Date.now())
+
+    const prisma = await this.prismaService.getClient()
+    if (!prisma?.user || !prisma.passwordResetToken || !this.mailService.isConfigured()) return response
+
+    const email = normalizeEmail(identifier)
+    const user = await prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        isActive: true,
+        OR: [
+          { username: identifierRaw.trim() },
+          { phone: normalizePhone(identifierRaw) || '__never_match__' },
+          { email: email || '__never_match__' }
+        ],
+        school: { deletedAt: null }
+      },
+      select: { id: true, email: true, name: true }
+    })
+    if (!user?.email) return response
+
+    const token = crypto.randomBytes(32).toString('base64url')
+    const tokenHash = hashResetToken(token)
+    await prisma.$transaction([
+      prisma.passwordResetToken.deleteMany({ where: { userId: user.id, usedAt: null } }),
+      prisma.passwordResetToken.create({
+        data: { userId: user.id, tokenHash, expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS) }
+      }),
+      prisma.passwordResetToken.deleteMany({
+        where: { expiresAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } }
+      })
+    ])
+
+    try {
+      await this.mailService.sendPasswordResetEmail({
+        to: user.email,
+        name: user.name,
+        token
+      })
+    } catch (error) {
+      await prisma.passwordResetToken.deleteMany({ where: { tokenHash } }).catch(() => undefined)
+      this.logger.error(`Password reset email delivery failed: ${error instanceof Error ? error.message : 'unknown error'}`)
+    }
+    return response
+  }
+
+  async confirmPasswordReset(tokenRaw: string, password: string) {
+    const token = String(tokenRaw || '').trim()
+    if (token.length < 32) return { ok: false as const, reason: 'INVALID_TOKEN' as const }
+    if (!isValidNewPassword(password)) return { ok: false as const, reason: 'INVALID_PASSWORD' as const }
+
+    const prisma = await this.prismaService.getClient()
+    if (!prisma?.passwordResetToken || !prisma.user) {
+      return { ok: false as const, reason: 'UNAVAILABLE' as const }
+    }
+
+    const tokenHash = hashResetToken(token)
+    const resetToken = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      include: { user: { include: { school: { select: { deletedAt: true } } } } }
+    })
+    if (
+      !resetToken ||
+      resetToken.usedAt ||
+      resetToken.expiresAt.getTime() <= Date.now() ||
+      resetToken.user.deletedAt ||
+      resetToken.user.school.deletedAt ||
+      !resetToken.user.isActive
+    ) {
+      return { ok: false as const, reason: 'INVALID_TOKEN' as const }
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const consumed = await tx.passwordResetToken.updateMany({
+        where: { id: resetToken.id, usedAt: null, expiresAt: { gt: new Date() } },
+        data: { usedAt: new Date() }
+      })
+      if (consumed.count !== 1) return false
+      await tx.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash: hashPassword(password), mustChangePassword: false }
+      })
+      await tx.passwordResetToken.deleteMany({
+        where: { userId: resetToken.userId, id: { not: resetToken.id } }
+      })
+      return true
+    })
+    if (!result) return { ok: false as const, reason: 'INVALID_TOKEN' as const }
+
+    this.loginAttempts.delete(resetToken.user.username.toLowerCase())
+    if (resetToken.user.email) this.loginAttempts.delete(resetToken.user.email.toLowerCase())
+    return { ok: true as const }
   }
 
   async resolveSession(token: string): Promise<AuthContext | null> {
@@ -170,9 +282,14 @@ export class AuthService implements OnModuleInit {
     const role = this.allowedCreatedRole(actor, input.role)
     if (!role) return { ok: false as const, reason: 'FORBIDDEN' as const }
     const normalizedPhone = normalizePhone(input.phone)
+    const normalizedEmail = normalizeEmail(input.email)
     if (normalizedPhone && !isValidPhone(normalizedPhone)) return { ok: false as const, reason: 'INVALID_PHONE' as const }
     if (normalizedPhone && (await prisma.user.findUnique({ where: { phone: normalizedPhone }, select: { id: true } }))) {
       return { ok: false as const, reason: 'PHONE_EXISTS' as const }
+    }
+    if (input.email && !normalizedEmail) return { ok: false as const, reason: 'INVALID_EMAIL' as const }
+    if (normalizedEmail && (await prisma.user.findUnique({ where: { email: normalizedEmail }, select: { id: true } }))) {
+      return { ok: false as const, reason: 'EMAIL_EXISTS' as const }
     }
 
     const createsSchool = actor.role === 'super_admin' && role === 'school_admin'
@@ -193,6 +310,7 @@ export class AuthService implements OnModuleInit {
           schoolId,
           username,
           phone: normalizedPhone,
+          email: normalizedEmail,
           passwordHash: hashPassword(DEFAULT_INITIAL_PASSWORD),
           name: input.name,
           role,
@@ -232,9 +350,14 @@ export class AuthService implements OnModuleInit {
       return { ok: false as const, reason: 'FORBIDDEN' as const }
     }
     const phone = normalizePhone(input.phone)
+    const email = normalizeEmail(input.email)
     if (phone && !isValidPhone(phone)) return { ok: false as const, reason: 'INVALID_PHONE' as const }
     if (phone && phone !== existing.phone && (await prisma.user.findUnique({ where: { phone }, select: { id: true } }))) {
       return { ok: false as const, reason: 'PHONE_EXISTS' as const }
+    }
+    if (input.email && !email) return { ok: false as const, reason: 'INVALID_EMAIL' as const }
+    if (email && email !== existing.email && (await prisma.user.findUnique({ where: { email }, select: { id: true } }))) {
+      return { ok: false as const, reason: 'EMAIL_EXISTS' as const }
     }
 
     if (actor.role === 'super_admin' && role === 'school_admin' && input.schoolName?.trim()) {
@@ -248,6 +371,7 @@ export class AuthService implements OnModuleInit {
         where: { id: existing.id },
         data: {
           phone,
+          email,
           name: input.name,
           role,
           permissions: permissions as Prisma.InputJsonValue,
@@ -361,6 +485,7 @@ export class AuthService implements OnModuleInit {
       schoolName,
       username: row.username,
       phone: row.phone ?? null,
+      email: row.email ?? null,
       name: row.name,
       role,
       permissions: effectivePermissions(role, row.permissions),
@@ -452,11 +577,11 @@ export class AuthService implements OnModuleInit {
     await prisma.user.upsert({
       where: { username: 'admin' },
       update: {
-        schoolId: 'admin', phone: null, name: '超级管理员', role: 'super_admin',
+        schoolId: 'admin', phone: null, email: null, name: '超级管理员', role: 'super_admin',
         permissions: ['*'], mustChangePassword: false, isActive: true, deletedAt: null
       },
       create: {
-        schoolId: 'admin', username: 'admin', phone: null, passwordHash: hashPassword('Admin@123456'),
+        schoolId: 'admin', username: 'admin', phone: null, email: null, passwordHash: hashPassword('Admin@123456'),
         name: '超级管理员', role: 'super_admin', permissions: ['*'], mustChangePassword: false,
         isActive: true, deletedAt: null
       }
@@ -575,6 +700,21 @@ function normalizePhone(value: string | undefined): string | null {
 
 function isValidPhone(phone: string): boolean {
   return /^1[3-9]\d{9}$/.test(phone)
+}
+
+function normalizeEmail(value: string | undefined): string | null {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return null
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) && normalized.length <= 254 ? normalized : null
+}
+
+function isValidNewPassword(password: string): boolean {
+  const value = String(password || '')
+  return value.length >= 8 && value.length <= 128
+}
+
+function hashResetToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
 }
 
 function randomDigits(length: number): string {

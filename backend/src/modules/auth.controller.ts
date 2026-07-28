@@ -13,6 +13,21 @@ export class AuthController {
     return this.authService.login(String(payload.username || '').trim(), String(payload.password || ''))
   }
 
+  @Post('/password-reset/request')
+  async requestPasswordReset(@Body() body: unknown) {
+    const payload = asObject(body)
+    return this.authService.requestPasswordReset(String(payload.identifier || '').trim())
+  }
+
+  @Post('/password-reset/confirm')
+  async confirmPasswordReset(@Body() body: unknown) {
+    const payload = asObject(body)
+    return this.authService.confirmPasswordReset(
+      String(payload.token || '').trim(),
+      String(payload.password || '')
+    )
+  }
+
   @Get('/users')
   @UseGuards(AuthGuard)
   async listUsers(@Req() request: AuthenticatedRequest, @Query('includeDeleted') includeDeleted?: string) {
@@ -30,6 +45,7 @@ export class AuthController {
       name,
       schoolName: String(payload.schoolName || payload.accountName || '').trim(),
       phone: String(payload.phone || '').trim(),
+      email: String(payload.email || '').trim(),
       role: normalizeRole(payload.role),
       permissions: normalizeStringList(payload.permissions),
       campusIds: normalizeStringList(payload.campusIds),
@@ -50,6 +66,7 @@ export class AuthController {
       name,
       schoolName: String(payload.schoolName || payload.accountName || '').trim(),
       phone: String(payload.phone || '').trim(),
+      email: String(payload.email || '').trim(),
       role: normalizeRole(payload.role),
       permissions: normalizeStringList(payload.permissions),
       campusIds: normalizeStringList(payload.campusIds),
